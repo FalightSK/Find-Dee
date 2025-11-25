@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+
+# Environment Variables
+.env
+.env.*
+
+# Firebase
+.firebase/
+serviceAccountKey.json
+backend/serviceAccountKey.json
+firebase-debug.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+
+# Misc
+*.log
+*.pdf
