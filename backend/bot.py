@@ -82,8 +82,11 @@ def handle_line_event(event, line_bot_api):
             if file_type == "image":
                 mock_tags = ["Image", "Lecture"]
             
+            # TODO: Call SLM to name and summarize the file
+            mock_name = "Mock Name"
+            mock_summary = "Mock Summary"
+
             # Save to Firebase
-            # Imports are now at the top
             
             # Fetch User Profile
             try:
@@ -115,7 +118,7 @@ def handle_line_event(event, line_bot_api):
             public_url = upload_file_to_storage(save_path, blob_name)
             
             file_data = {
-                "filename": f"{message_id}.{extension}", 
+                "filename": f"{message_id}.{extension}", # message_id is placeholder for SLM
                 "file_type": extension, # png or pdf
                 "storage_path": blob_name, 
                 "url": public_url, # Save URL separately if needed, or just rely on storage_path
