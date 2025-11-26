@@ -272,3 +272,49 @@ def delete_date(date_id):
         ref.delete()
         return True
     return False
+
+def search_files_by_tags(query_tags):
+    """
+    Searches for files that contain at least one of the query tags.
+    Returns a list of file objects.
+    """
+    if not query_tags:
+        return []
+        
+    files_ref = db.reference('files')
+    snapshot = files_ref.get()
+    
+    matched_files = []
+    if snapshot:
+        # Normalize query tags to lower case for case-insensitive matching
+        q_tags_lower = set(t.lower() for t in query_tags)
+        
+        for key, val in snapshot.items():
+            file_tags = val.get('tags', [])
+            if not file_tags:
+                continue
+                
+            # Check for intersection
+            f_tags_lower = set(t.lower() for t in file_tags)
+            if q_tags_lower.intersection(f_tags_lower):
+                val['id'] = key
+                # Backfill URL
+                if 'url' not in val and 'storage_path' in val and val['storage_path'].startswith('http'):
+                    val['url'] = val['storage_path']
+                matched_files.append(val)
+                
+    return matched_files
+
+def get_tag_pool():
+    """Retrieves the global tag pool."""
+    ref = db.reference('tags/all')
+    tags = ref.get()
+    if not tags:
+        return []
+    return tags
+
+def save_tag_pool(tags):
+    """Saves the global tag pool."""
+    ref = db.reference('tags/all')
+    ref.set(tags)
+    return True

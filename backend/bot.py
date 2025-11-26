@@ -4,7 +4,11 @@ from linebot.models import (
 )
 import os
 import logging
-from firebase_config import save_file_metadata, save_user, upload_file_to_storage
+import re
+from firebase_config import (
+    save_file_metadata, save_user, upload_file_to_storage, 
+    search_files_by_tags, get_tag_pool, save_tag_pool
+)
 from search.tagger import TagGenerator
 from search.deduplicator import TagDeduplicator
 from search.search import TagSearch
@@ -32,12 +36,22 @@ except Exception as e:
 
 # Simple in-memory state for prototype: {user_id: "mode"}
 user_states = {}
-# Global tag pool (in-memory for prototype)
-tag_pool = ["Lecture", "Homework", "Exam", "Schedule", "Payment"]
+
+def sanitize_filename(name):
+    """Sanitizes a string to be safe for filenames."""
+    # Remove invalid characters
+    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    # Replace spaces with underscores
+    name = name.replace(' ', '_')
+    return name
 
 def handle_line_event(event, line_bot_api):
-    global tag_pool
     user_id = event.source.user_id
+
+    # Fetch Tag Pool from Firebase
+    tag_pool = get_tag_pool()
+    if not tag_pool:
+        tag_pool = ["Lecture", "Homework", "Exam", "Schedule", "Payment"]
 
     # print(user_states.get(user_id)) # Replaced with debug log if needed, or just remove
     
@@ -56,23 +70,81 @@ def handle_line_event(event, line_bot_api):
             
             if not searcher:
                 reply_text = "ระบบค้นหายังไม่พร้อมใช้งานครับ"
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             else:
-                # TODO: Fetch real tag pool from Firebase. For now, we might need a way to get all tags.
-                # Since we don't have a direct 'get_all_tags' yet, let's assume a small static pool or 
-                # we'd need to implement a fetch. For this step, I'll use a placeholder pool 
-                # or if possible, query firebase.
-                # Let's mock the pool for now as per plan, or better, just pass empty and let LLM decide 'other'
-                # but searcher needs a pool to map to.
-                # Ideally: tag_pool = firebase_config.get_all_tags()
-                # tag_pool is now global and dynamic
-                
+                # 1. Extract Tags from Query
                 query_tags = searcher.extract_query_tags(query, tag_pool)
+                logger.info(f"Search query: '{query}' -> Tags: {query_tags}")
                 
-                # In a real app, we would query Firebase for files containing these tags.
-                # For now, we'll just echo back what we found.
-                reply_text = f"🔍 รับทราบครับ กำลังหาเอกสารเกี่ยวกับ: {', '.join(query_tags)}..."
+                # 2. Search in Firebase
+                found_files = search_files_by_tags(query_tags)
                 
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+                if not found_files:
+                    reply_text = f"ไม่พบเอกสารที่เกี่ยวกับ: {', '.join(query_tags)} ครับ 😅"
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+                else:
+                    # 3. Rank Results (Optional, for now just take top 5)
+                    # We could use searcher.match to rank them if we wanted better precision
+                    
+                    # Create Flex Message Carousel
+                    bubbles = []
+                    for file in found_files[:10]: # Limit to 10
+                        file_name = file.get('filename', 'Untitled')
+                        file_url = file.get('url', '#')
+                        file_tags = file.get('tags', [])
+                        
+                        tag_text = ", ".join([f"#{t}" for t in file_tags[:3]])
+                        
+                        bubble = {
+                            "type": "bubble",
+                            "body": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": file_name,
+                                        "weight": "bold",
+                                        "size": "md",
+                                        "wrap": True
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": tag_text,
+                                        "size": "xs",
+                                        "color": "#aaaaaa",
+                                        "wrap": True,
+                                        "margin": "sm"
+                                    }
+                                ]
+                            },
+                            "footer": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
+                                    {
+                                        "type": "button",
+                                        "style": "link",
+                                        "height": "sm",
+                                        "action": {
+                                            "type": "uri",
+                                            "label": "Download",
+                                            "uri": file_url
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                        bubbles.append(bubble)
+                        
+                    flex_message = FlexSendMessage(
+                        alt_text=f"ผลการค้นหา: {len(found_files)} รายการ",
+                        contents={
+                            "type": "carousel",
+                            "contents": bubbles
+                        }
+                    )
+                    line_bot_api.reply_message(event.reply_token, flex_message)
             
         elif text == r"/วันดี":
             # Deadline list command
@@ -95,6 +167,7 @@ def handle_line_event(event, line_bot_api):
             
             # Determine file type first
             file_type = "image" if isinstance(event.message, ImageMessage) else "file"
+            original_filename = "unknown"
             
             # File Type Validation
             if file_type == "image":
@@ -103,6 +176,7 @@ def handle_line_event(event, line_bot_api):
             elif file_type == "file":
                 # Check if it is PDF
                 file_name = event.message.file_name
+                original_filename = file_name
                 if not file_name.lower().endswith(".pdf"):
                     reply_text = "ขออภัยครับ รองรับเฉพาะไฟล์ PDF 📄 และรูปภาพ 🖼️ เท่านั้นครับ"
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
@@ -115,22 +189,23 @@ def handle_line_event(event, line_bot_api):
             message_id = event.message.id
             message_content = line_bot_api.get_message_content(message_id)
             
-            save_path = f"/tmp/{message_id}.{extension}"
+            # Save temporarily with ID first
+            temp_save_path = f"/tmp/{message_id}.{extension}"
             
-            with open(save_path, 'wb') as fd:
+            with open(temp_save_path, 'wb') as fd:
                 for chunk in message_content.iter_content():
                     fd.write(chunk)
             
-            logger.info(f"File saved locally to {save_path}")
+            logger.info(f"File saved locally to {temp_save_path}")
 
             # Call SLM to categorize and version the file
             generated_metadata = {"tags": [], "title": "Untitled", "summary": ""}
             
             if tagger:
                 mime_type = "image/jpeg" if extension in ["jpg", "jpeg", "png"] else "application/pdf"
-                logger.info(f"Starting tag generation for {save_path} ({mime_type})")
+                logger.info(f"Starting tag generation for {temp_save_path} ({mime_type})")
                 try:
-                    generated_metadata = tagger.generate_metadata(save_path, mime_type)
+                    generated_metadata = tagger.generate_metadata(temp_save_path, mime_type)
                     tags_found = generated_metadata.get("tags", [])
                     if tags_found:
                         logger.info(f"Tags generated successfully: {tags_found}")
@@ -156,10 +231,13 @@ def handle_line_event(event, line_bot_api):
                 combined_pool = list(set(tag_pool + final_tags))
                 # Semantic deduplication on the whole pool
                 tag_pool = deduplicator.deduplicate(combined_pool)
-                logger.info(f"Tag pool updated. New size: {len(tag_pool)}")
+                # Save back to Firebase
+                save_tag_pool(tag_pool)
+                logger.info(f"Tag pool updated and saved. New size: {len(tag_pool)}")
             elif final_tags:
                 tag_pool.extend(final_tags)
                 tag_pool = list(set(tag_pool))
+                save_tag_pool(tag_pool)
 
             # Fallback if no tags
             if not final_tags:
@@ -169,6 +247,23 @@ def handle_line_event(event, line_bot_api):
             mock_name = generated_metadata.get("title", f"File-{message_id}")
             mock_summary = generated_metadata.get("summary", "No summary available")
 
+            # --- Rename Logic ---
+            final_filename = f"{message_id}.{extension}" # Default fallback
+            
+            if file_type == "file":
+                # Use original filename for PDFs
+                final_filename = original_filename
+            elif file_type == "image":
+                # Use generated title for Images
+                safe_title = sanitize_filename(mock_name)
+                final_filename = f"{safe_title}.jpg"
+            
+            # Ensure unique filename in storage? 
+            # For now, we'll just append message_id to ensure uniqueness if needed, 
+            # or just trust the user/title. Let's append a short hash or ID to be safe if we want to avoid collisions
+            # but user asked for "rename based on received name".
+            # Let's stick to the requested logic.
+            
             # Save to Firebase
             
             # Fetch User Profile
@@ -197,27 +292,27 @@ def handle_line_event(event, line_bot_api):
             save_user(user_id, display_name, group_id, group_name) 
             
             # Upload to Firebase Storage
-            blob_name = f"uploads/{user_id}/{message_id}.{extension}"
-            public_url = upload_file_to_storage(save_path, blob_name)
+            blob_name = f"uploads/{user_id}/{final_filename}"
+            public_url = upload_file_to_storage(temp_save_path, blob_name)
             
             file_data = {
-                "filename": f"{message_id}.{extension}", # message_id is placeholder for SLM
+                "filename": final_filename, 
                 "file_type": extension, # png or pdf
                 "storage_path": blob_name, 
-                "url": public_url, # Save URL separately if needed, or just rely on storage_path
+                "url": public_url, 
                 "owner_id": user_id,
                 "group_id": group_id, 
                 "tags": mock_tags,
                 "version": "v1",
-                "detail_summary": mock_summary, # Placeholder for SLM
+                "detail_summary": mock_summary, 
                 "due_date_id": None
             }
             
             file_id = save_file_metadata(file_data)
             
             # Clean up local temp file
-            if os.path.exists(save_path):
-                os.remove(save_path)
+            if os.path.exists(temp_save_path):
+                os.remove(temp_save_path)
             
             # Create Flex Message
             liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID") # Fallback if not set
@@ -252,7 +347,7 @@ def handle_line_event(event, line_bot_api):
                             },
                             {
                                 "type": "text",
-                                "text": f"{message_id}.{extension}",
+                                "text": final_filename,
                                 "size": "xs",
                                 "color": "#F2F3F2",
                                 "wrap": True,
