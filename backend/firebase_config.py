@@ -3,29 +3,53 @@ from firebase_admin import credentials, storage, db
 import os
 import datetime
 
+import base64
+import json
+import tempfile
+
 # Path to the service account key file
 SERVICE_ACCOUNT_KEY_PATH = "serviceAccountKey.json"
 
 def initialize_firebase():
     try:
-        # Check if file exists
-        if not os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
-            print(f"Error: {SERVICE_ACCOUNT_KEY_PATH} not found.")
+        cred = None
+        
+        # Option 1: Try Base64 Env Var (For Cloud Run)
+        firebase_creds_base64 = os.environ.get('FIREBASE_CREDENTIALS_BASE64')
+        if firebase_creds_base64:
+            try:
+                creds_json = base64.b64decode(firebase_creds_base64).decode('utf-8')
+                creds_dict = json.loads(creds_json)
+                cred = credentials.Certificate(creds_dict)
+                print("Initialized Firebase using FIREBASE_CREDENTIALS_BASE64 env var.")
+            except Exception as e:
+                print(f"Failed to decode FIREBASE_CREDENTIALS_BASE64: {e}")
+
+        # Option 2: Try Local File
+        if not cred and os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
+            cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
+            print(f"Initialized Firebase using {SERVICE_ACCOUNT_KEY_PATH}.")
+
+        if not cred:
+            print("Error: Could not find Firebase credentials (env var or file).")
             return None
 
         # Initialize Firebase Admin SDK
-        cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
-        
-        project_id = "find-dee" 
-        
-        options = {
-            'databaseURL': f'https://{project_id}-default-rtdb.firebaseio.com/',
-            'storageBucket': f'{project_id}.firebasestorage.app'
-        }
-        
-        app = firebase_admin.initialize_app(cred, options)
-        print("Firebase Admin SDK initialized successfully.")
-        return app
+        # Check if already initialized to avoid error on reload
+        if not firebase_admin._apps:
+            project_id = "find-dee" 
+            
+            options = {
+                'databaseURL': f'https://{project_id}-default-rtdb.firebaseio.com/',
+                'storageBucket': f'{project_id}.firebasestorage.app'
+            }
+            
+            app = firebase_admin.initialize_app(cred, options)
+            print("Firebase Admin SDK initialized successfully.")
+            return app
+        else:
+            return firebase_admin.get_app()
+            
     except Exception as e:
         print(f"Failed to initialize Firebase: {e}")
         return None
