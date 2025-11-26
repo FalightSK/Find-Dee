@@ -1,0 +1,26 @@
+graph TD
+    User((User))
+    Bot[LINE Bot (bot.py)]
+    Gemini[Gemini 2.5 Flash]
+    Firebase[(Firebase)]
+    TagPool[Global Tag Pool]
+
+    subgraph "File Upload Flow"
+        User -- 1. Upload File --> Bot
+        Bot -- 2. Generate Metadata --> Gemini
+        Gemini -- 3. Tags, Title, Summary --> Bot
+        Bot -- 4. Deduplicate Tags --> Gemini
+        Gemini -- 5. Unique Tags --> Bot
+        Bot -- 6. Update Pool --> TagPool
+        Bot -- 7. Save Metadata --> Firebase
+        Bot -- 8. Reply --> User
+    end
+
+    subgraph "Search Flow"
+        User -- A. Search Command --> Bot
+        Bot -- B. Get Current Pool --> TagPool
+        Bot -- C. Extract Query Tags --> Gemini
+        Gemini -- D. Query Tags --> Bot
+        Bot -- E. Match Documents --> Firebase
+        Bot -- F. Return Results --> User
+    end

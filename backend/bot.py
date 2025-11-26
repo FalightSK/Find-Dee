@@ -3,15 +3,43 @@ from linebot.models import (
     ImageMessage, FileMessage, FlexSendMessage
 )
 import os
+import logging
 from firebase_config import save_file_metadata, save_user, upload_file_to_storage
+from search.tagger import TagGenerator
+from search.deduplicator import TagDeduplicator
+from search.search import TagSearch
+
+# Configure Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Services
+try:
+    tagger = TagGenerator()
+    deduplicator = TagDeduplicator()
+    searcher = TagSearch()
+except Exception as e:
+    logger.error(f"Warning: Could not initialize search services: {e}")
+    tagger = None
+    deduplicator = None
+    searcher = None
 
 # Simple in-memory state for prototype: {user_id: "mode"}
 user_states = {}
+# Global tag pool (in-memory for prototype)
+tag_pool = ["Lecture", "Homework", "Exam", "Schedule", "Payment"]
 
 def handle_line_event(event, line_bot_api):
+    global tag_pool
     user_id = event.source.user_id
 
-    print(user_states.get(user_id))
+    # print(user_states.get(user_id)) # Replaced with debug log if needed, or just remove
     
     if isinstance(event.message, TextMessage):
         text = event.message.text.strip()
@@ -25,8 +53,25 @@ def handle_line_event(event, line_bot_api):
         elif text.startswith(r"/หาดี"):
             # Search command
             query = text.replace(r"/หาดี", "").strip()
-            # TODO: Implement search logic
-            reply_text = f"🔍 กำลังค้นหาเอกสารเกี่ยวกับ '{query}' ให้ครับ..."
+            
+            if not searcher:
+                reply_text = "ระบบค้นหายังไม่พร้อมใช้งานครับ"
+            else:
+                # TODO: Fetch real tag pool from Firebase. For now, we might need a way to get all tags.
+                # Since we don't have a direct 'get_all_tags' yet, let's assume a small static pool or 
+                # we'd need to implement a fetch. For this step, I'll use a placeholder pool 
+                # or if possible, query firebase.
+                # Let's mock the pool for now as per plan, or better, just pass empty and let LLM decide 'other'
+                # but searcher needs a pool to map to.
+                # Ideally: tag_pool = firebase_config.get_all_tags()
+                # tag_pool is now global and dynamic
+                
+                query_tags = searcher.extract_query_tags(query, tag_pool)
+                
+                # In a real app, we would query Firebase for files containing these tags.
+                # For now, we'll just echo back what we found.
+                reply_text = f"🔍 รับทราบครับ กำลังหาเอกสารเกี่ยวกับ: {', '.join(query_tags)}..."
+                
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             
         elif text == r"/วันดี":
@@ -46,7 +91,7 @@ def handle_line_event(event, line_bot_api):
     
     elif isinstance(event.message, (ImageMessage, FileMessage)):
         if user_states.get(user_id) == "waiting_for_file":
-            print("Retrieving file")
+            logger.info(f"Retrieving file from user: {user_id}")
             
             # Determine file type first
             file_type = "image" if isinstance(event.message, ImageMessage) else "file"
@@ -76,15 +121,53 @@ def handle_line_event(event, line_bot_api):
                 for chunk in message_content.iter_content():
                     fd.write(chunk)
             
-            # TODO: Call SLM to categorize and version the file
-            # Mocking SLM result for now
-            mock_tags = ["Uncategorized"]
-            if file_type == "image":
-                mock_tags = ["Image", "Lecture"]
+            logger.info(f"File saved locally to {save_path}")
+
+            # Call SLM to categorize and version the file
+            generated_metadata = {"tags": [], "title": "Untitled", "summary": ""}
             
-            # TODO: Call SLM to name and summarize the file
-            mock_name = "Mock Name"
-            mock_summary = "Mock Summary"
+            if tagger:
+                mime_type = "image/jpeg" if extension in ["jpg", "jpeg", "png"] else "application/pdf"
+                logger.info(f"Starting tag generation for {save_path} ({mime_type})")
+                try:
+                    generated_metadata = tagger.generate_metadata(save_path, mime_type)
+                    tags_found = generated_metadata.get("tags", [])
+                    if tags_found:
+                        logger.info(f"Tags generated successfully: {tags_found}")
+                    else:
+                        logger.warning("Tag generation returned empty list.")
+                except Exception as e:
+                    logger.error(f"Tag generation failed: {e}")
+            else:
+                logger.warning("TagGenerator service is not available.")
+            
+            raw_tags = generated_metadata.get("tags", [])
+            
+            # Deduplicate tags
+            final_tags = raw_tags
+            if deduplicator:
+                final_tags = deduplicator.deduplicate(raw_tags)
+            
+            # Update Global Tag Pool
+            # Add new tags to the pool and re-deduplicate to ensure semantic consistency
+            if deduplicator and final_tags:
+                logger.info(f"Updating tag pool. Current size: {len(tag_pool)}")
+                # Combine and remove exact duplicates first
+                combined_pool = list(set(tag_pool + final_tags))
+                # Semantic deduplication on the whole pool
+                tag_pool = deduplicator.deduplicate(combined_pool)
+                logger.info(f"Tag pool updated. New size: {len(tag_pool)}")
+            elif final_tags:
+                tag_pool.extend(final_tags)
+                tag_pool = list(set(tag_pool))
+
+            # Fallback if no tags
+            if not final_tags:
+                final_tags = ["Uncategorized"]
+
+            mock_tags = final_tags
+            mock_name = generated_metadata.get("title", f"File-{message_id}")
+            mock_summary = generated_metadata.get("summary", "No summary available")
 
             # Save to Firebase
             
@@ -126,7 +209,7 @@ def handle_line_event(event, line_bot_api):
                 "group_id": group_id, 
                 "tags": mock_tags,
                 "version": "v1",
-                "detail_summary": "Auto-generated summary...", # Placeholder for SLM
+                "detail_summary": mock_summary, # Placeholder for SLM
                 "due_date_id": None
             }
             

@@ -1,5 +1,6 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from typing import List
 import json
 
@@ -8,8 +9,8 @@ class TagDeduplicator:
         api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        client = genai.Client(api_key=api_key)
+        self.model = client
 
     def deduplicate(self, tags: List[str]) -> List[str]:
         if not tags:
@@ -23,7 +24,13 @@ class TagDeduplicator:
         Tags:
         {json.dumps(tags)}
         """
-        response = self.model.generate_content(prompt)
+        response = self.model.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+    )
+        )
         try:
             text = response.text.strip()
             if text.startswith("```json"):

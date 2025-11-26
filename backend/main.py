@@ -8,6 +8,9 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage, FileMessage
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from bot import handle_line_event
 from firebase_config import (
     initialize_firebase, 
@@ -23,8 +26,6 @@ from firebase_config import (
     update_date,
     delete_date
 )
-
-load_dotenv()
 
 app = FastAPI()
 
@@ -226,3 +227,7 @@ async def callback(request: Request):
 @handler.add(MessageEvent, message=(TextMessage, ImageMessage, FileMessage))
 def handle_message(event):
     handle_line_event(event, line_bot_api)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
