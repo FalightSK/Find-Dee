@@ -318,3 +318,17 @@ def save_tag_pool(tags):
     ref = db.reference('tags/all')
     ref.set(tags)
     return True
+
+def check_filename_exists(filename):
+    """Checks if a filename already exists in the database."""
+    files_ref = db.reference('files')
+    snapshot = files_ref.get()
+    
+    if not snapshot:
+        return False
+        
+    for val in snapshot.values():
+        if val.get('filename') == filename:
+            return True
+            
+    return False

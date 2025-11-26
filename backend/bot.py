@@ -7,7 +7,7 @@ import logging
 import re
 from firebase_config import (
     save_file_metadata, save_user, upload_file_to_storage, 
-    search_files_by_tags, get_tag_pool, save_tag_pool
+    search_files_by_tags, get_tag_pool, save_tag_pool, check_filename_exists
 )
 from search.tagger import TagGenerator
 from search.deduplicator import TagDeduplicator
@@ -83,10 +83,19 @@ def handle_line_event(event, line_bot_api):
                     reply_text = f"ไม่พบเอกสารที่เกี่ยวกับ: {', '.join(query_tags)} ครับ 😅"
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
                 else:
-                    # 3. Rank Results (Optional, for now just take top 5)
-                    # We could use searcher.match to rank them if we wanted better precision
+                    # 3. Generate Meta-Summary
+                    summaries = [f.get('detail_summary') for f in found_files if f.get('detail_summary')]
+                    meta_summary = ""
+                    if summaries and tagger:
+                        meta_summary = tagger.summarize_group(summaries)
                     
-                    # Create Flex Message Carousel
+                    messages_to_send = []
+                    
+                    if meta_summary:
+                        summary_text = f"สรุปภาพรวมของเอกสารที่พบ {len(found_files)} รายการครับ:\n\n{meta_summary}"
+                        messages_to_send.append(TextSendMessage(text=summary_text))
+                    
+                    # 4. Create Flex Message Carousel
                     bubbles = []
                     for file in found_files[:10]: # Limit to 10
                         file_name = file.get('filename', 'Untitled')
@@ -144,7 +153,9 @@ def handle_line_event(event, line_bot_api):
                             "contents": bubbles
                         }
                     )
-                    line_bot_api.reply_message(event.reply_token, flex_message)
+                    messages_to_send.append(flex_message)
+                    
+                    line_bot_api.reply_message(event.reply_token, messages_to_send)
             
         elif text == r"/วันดี":
             # Deadline list command
@@ -246,23 +257,36 @@ def handle_line_event(event, line_bot_api):
             mock_tags = final_tags
             mock_name = generated_metadata.get("title", f"File-{message_id}")
             mock_summary = generated_metadata.get("summary", "No summary available")
+            suggested_filename = generated_metadata.get("suggested_filename", "")
 
-            # --- Rename Logic ---
-            final_filename = f"{message_id}.{extension}" # Default fallback
+            # --- Smart Rename Logic ---
+            # 1. Determine Base Name
+            base_name = "untitled_file"
             
-            if file_type == "file":
-                # Use original filename for PDFs
-                final_filename = original_filename
-            elif file_type == "image":
-                # Use generated title for Images
-                safe_title = sanitize_filename(mock_name)
-                final_filename = f"{safe_title}.jpg"
+            if suggested_filename:
+                base_name = suggested_filename
+            elif file_type == "file" and original_filename != "unknown":
+                # Fallback to original filename (without extension) if AI didn't suggest one
+                base_name = os.path.splitext(original_filename)[0]
+                base_name = sanitize_filename(base_name)
+            else:
+                # Fallback to sanitized title
+                base_name = sanitize_filename(mock_name)
             
-            # Ensure unique filename in storage? 
-            # For now, we'll just append message_id to ensure uniqueness if needed, 
-            # or just trust the user/title. Let's append a short hash or ID to be safe if we want to avoid collisions
-            # but user asked for "rename based on received name".
-            # Let's stick to the requested logic.
+            # 2. Ensure Uniqueness Loop
+            count = 0
+            while True:
+                if count == 0:
+                    candidate_name = f"{base_name}.{extension}"
+                else:
+                    candidate_name = f"{base_name}_{count}.{extension}"
+                
+                if not check_filename_exists(candidate_name):
+                    final_filename = candidate_name
+                    break
+                count += 1
+            
+            logger.info(f"Final filename determined: {final_filename}")
             
             # Save to Firebase
             

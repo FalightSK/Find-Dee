@@ -21,8 +21,9 @@ class TagGenerator:
         1. A list of relevant tags (max 5).
         2. A concise title.
         3. A brief summary (1-2 sentences).
+        4. A short, concise, content-based filename (in English, no spaces, use underscores, max 30 chars). Do not include file extension.
         
-        Return ONLY a JSON object with keys: "tags" (list of strings), "title" (string), "summary" (string).
+        Return ONLY a JSON object with keys: "tags" (list of strings), "title" (string), "summary" (string), "suggested_filename" (string).
         """
         
         try:
@@ -48,7 +49,7 @@ class TagGenerator:
             return json.loads(text)
         except Exception as e:
             print(f"Error generating metadata: {e}")
-            return {"tags": [], "title": "Untitled", "summary": "No summary available."}
+            return {"tags": [], "title": "Untitled", "summary": "No summary available.", "suggested_filename": "untitled_file"}
 
     def generate_tags(self, document_text: str) -> List[str]:
         prompt = f"""
@@ -75,4 +76,31 @@ class TagGenerator:
             return json.loads(text)
         except Exception as e:
             print(f"Error parsing tags: {e}")
-            return []
+    def summarize_group(self, summaries: List[str]) -> str:
+        """
+        Summarizes a list of summaries into a single cohesive summary.
+        """
+        if not summaries:
+            return ""
+            
+        joined_summaries = "\n- ".join(summaries)
+        prompt = f"""
+        Here are summaries of several documents found for a search query. 
+        Please provide a concise, integrated summary (in Thai) that explains what these documents collectively contain.
+        
+        Summaries:
+        - {joined_summaries}
+        """
+        
+        try:
+            response = self.model.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
+                )
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"Error summarizing group: {e}")
+            return "ไม่สามารถสรุปผลการค้นหาได้ในขณะนี้"
