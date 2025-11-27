@@ -15,6 +15,19 @@ const FileListView = () => {
     const [editingFile, setEditingFile] = useState(null);
     const [editForm, setEditForm] = useState({ filename: '', tags: '' });
 
+    // Detail Modal State
+    const [selectedFile, setSelectedFile] = useState(null);
+
+    // Expanded Groups State
+    const [expandedGroups, setExpandedGroups] = useState({});
+
+    const toggleGroup = (index) => {
+        setExpandedGroups(prev => ({
+            ...prev,
+            [index]: !prev[index]
+        }));
+    };
+
     // Dropdown State
     const [activeDropdown, setActiveDropdown] = useState(null);
 
@@ -182,99 +195,103 @@ const FileListView = () => {
                 </div>
             </div>
 
-            {/* AI Hero Card */}
-            <div className="ai-card p-4 mb-4 text-white position-relative">
-                <div className="position-relative" style={{ zIndex: 10 }}>
-                    <div className="d-flex align-items-center mb-3">
-                        <div className="rounded-circle bg-white bg-opacity-25 p-2 me-3" style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <span style={{ fontSize: '20px' }}>🤖</span>
-                        </div>
-                        <h5 className="mb-0 fw-bold">AI Study Buddy</h5>
-                    </div>
-
-                    <div className="d-grid gap-2">
-                        <button className="btn bg-white bg-opacity-25 border-0 text-white text-start">
-                            Summarize recent lectures...
-                        </button>
-                        <button className="btn bg-white bg-opacity-25 border-0 text-white d-flex justify-content-between align-items-center">
-                            <span>Explain a concept...</span>
-                            <ArrowUpRight size={16} />
-                        </button>
-                    </div>
-                </div>
-            </div>
-
             {/* File Sections */}
             {loading ? (
                 <div className="text-center py-5 text-muted">Loading files...</div>
             ) : groupedFiles.length === 0 ? (
                 <div className="text-center py-5 text-muted">No files found.</div>
             ) : (
-                groupedFiles.map((group, index) => (
-                    <div key={index} className="mb-4">
-                        <div className="d-flex justify-content-between align-items-center mb-3 px-1">
-                            <h5 className="fw-bold mb-0">{group.group_name}</h5>
-                            <button className="btn btn-link text-decoration-none text-success p-0 fw-medium" style={{ fontSize: '14px' }}>View All</button>
-                        </div>
-                        <div className="d-flex flex-column gap-3">
-                            {group.files.map((file) => (
-                                <div key={file.id} className="card border-0 shadow-sm" style={{ borderRadius: '16px' }}>
-                                    <div className="card-body p-3">
-                                        <div className="d-flex align-items-center">
-                                            {/* File Icon & Preview Link */}
-                                            <a href={file.url} target="_blank" rel="noopener noreferrer" className={`file-icon ${getIconBgColor(file.file_type)} me-3 text-decoration-none`}>
-                                                {getFileIcon(file.file_type)}
-                                            </a>
+                groupedFiles.map((group, index) => {
+                    const isExpanded = expandedGroups[index];
+                    const displayedFiles = isExpanded ? group.files : group.files.slice(0, 3);
+                    const hasMore = group.files.length > 3;
 
-                                            {/* File Info */}
-                                            <div className="flex-grow-1" style={{ minWidth: 0 }}>
-                                                <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-decoration-none text-dark">
-                                                    <h6 className="card-title mb-1 text-truncate" style={{ fontSize: '14px' }}>{file.filename}</h6>
-                                                </a>
-                                                <div className="d-flex align-items-center gap-2">
-                                                    {file.tags && file.tags.map((tag, i) => (
-                                                        <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '11px' }}>
-                                                            {tag}
-                                                        </span>
-                                                    ))}
-                                                    <small className="text-muted" style={{ fontSize: '11px' }}>• {new Date(file.upload_date).toLocaleDateString()}</small>
+                    return (
+                        <div key={index} className="mb-4">
+                            <div className="d-flex justify-content-between align-items-center mb-3 px-1">
+                                <h5 className="fw-bold mb-0">{group.group_name}</h5>
+                                {hasMore && (
+                                    <button
+                                        className="btn btn-link text-decoration-none text-success p-0 fw-medium"
+                                        style={{ fontSize: '14px' }}
+                                        onClick={() => toggleGroup(index)}
+                                    >
+                                        {isExpanded ? 'Show Less' : `View all (${group.files.length})`}
+                                    </button>
+                                )}
+                            </div>
+                            <div className="d-flex flex-column gap-3">
+                                {displayedFiles.map((file) => (
+                                    <div
+                                        key={file.id}
+                                        className="card border-0 shadow-sm"
+                                        style={{ borderRadius: '16px', cursor: 'pointer' }}
+                                        onClick={() => setSelectedFile(file)}
+                                    >
+                                        <div className="card-body p-3">
+                                            <div className="d-flex align-items-start">
+                                                {/* File Icon */}
+                                                <div className={`file-icon ${getIconBgColor(file.file_type)} me-3 flex-shrink-0`} style={{ width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px' }}>
+                                                    {getFileIcon(file.file_type)}
                                                 </div>
-                                            </div>
 
-                                            {/* Actions Dropdown */}
-                                            <div className="position-relative">
-                                                <button
-                                                    className="btn btn-link text-muted p-0"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setActiveDropdown(activeDropdown === file.id ? null : file.id);
-                                                    }}
-                                                >
-                                                    <MoreVertical size={20} />
-                                                </button>
+                                                {/* File Info */}
+                                                <div className="flex-grow-1" style={{ minWidth: 0 }}>
+                                                    <div className="d-flex justify-content-between align-items-start">
+                                                        <h6 className="card-title mb-1 fw-bold text-truncate pe-2" style={{ fontSize: '15px' }}>{file.filename}</h6>
 
-                                                {activeDropdown === file.id && (
-                                                    <div className="position-absolute end-0 mt-2 bg-white shadow-sm rounded-3 py-2" style={{ zIndex: 100, minWidth: '150px', border: '1px solid #eee' }}>
-                                                        <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2" onClick={() => openEditModal(file)}>
-                                                            <Edit2 size={16} /> Edit
-                                                        </button>
-                                                        <a href={file.url} target="_blank" rel="noopener noreferrer" className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-decoration-none text-dark">
-                                                            <ExternalLink size={16} /> Preview
-                                                        </a>
-                                                        <div className="dropdown-divider my-1 border-top"></div>
-                                                        <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-danger" onClick={() => handleDelete(file.id)}>
-                                                            <Trash2 size={16} /> Delete
-                                                        </button>
+                                                        {/* Actions Dropdown */}
+                                                        <div className="position-relative ms-2">
+                                                            <button
+                                                                className="btn btn-link text-muted p-0"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setActiveDropdown(activeDropdown === file.id ? null : file.id);
+                                                                }}
+                                                            >
+                                                                <MoreVertical size={20} />
+                                                            </button>
+
+                                                            {activeDropdown === file.id && (
+                                                                <div className="position-absolute end-0 mt-2 bg-white shadow-sm rounded-3 py-2" style={{ zIndex: 100, minWidth: '150px', border: '1px solid #eee' }}>
+                                                                    <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2" onClick={(e) => { e.stopPropagation(); openEditModal(file); }}>
+                                                                        <Edit2 size={16} /> Edit
+                                                                    </button>
+                                                                    <a href={file.url} target="_blank" rel="noopener noreferrer" className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-decoration-none text-dark" onClick={(e) => e.stopPropagation()}>
+                                                                        <ExternalLink size={16} /> Preview
+                                                                    </a>
+                                                                    <div className="dropdown-divider my-1 border-top"></div>
+                                                                    <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-danger" onClick={(e) => { e.stopPropagation(); handleDelete(file.id); }}>
+                                                                        <Trash2 size={16} /> Delete
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                )}
+
+                                                    {/* Tags & Date */}
+                                                    <div className="d-flex align-items-center flex-wrap gap-1 mt-1">
+                                                        {file.tags && file.tags.slice(0, 3).map((tag, i) => (
+                                                            <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                {tag}
+                                                            </span>
+                                                        ))}
+                                                        {file.tags && file.tags.length > 3 && (
+                                                            <span className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px' }}>
+                                                                +{file.tags.length - 3}
+                                                            </span>
+                                                        )}
+                                                        <small className="text-muted ms-auto" style={{ fontSize: '10px' }}>{new Date(file.upload_date).toLocaleDateString()}</small>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
-                                </div>
-                            ))}
+                                ))}
+                            </div>
                         </div>
-                    </div>
-                ))
+                    );
+                })
             )}
 
             {/* Floating Action Button */}
@@ -352,6 +369,65 @@ const FileListView = () => {
                                     <button className="btn bg-line-green text-white w-100 py-2 rounded-3 fw-bold" onClick={handleUpdate}>
                                         Save Changes
                                     </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="modal-backdrop show"></div>
+                </>
+            )}
+
+            {/* File Detail Modal */}
+            {selectedFile && (
+                <>
+                    <div className="modal show d-block" tabIndex="-1" onClick={() => setSelectedFile(null)}>
+                        <div className="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+                            <div className="modal-content" style={{ borderRadius: '16px' }} onClick={e => e.stopPropagation()}>
+                                <div className="modal-header border-0 pb-0">
+                                    <h5 className="modal-title fw-bold text-truncate pe-2">{selectedFile.filename}</h5>
+                                    <button type="button" className="btn-close" onClick={() => setSelectedFile(null)}></button>
+                                </div>
+                                <div className="modal-body">
+                                    {/* Tags */}
+                                    <div className="mb-3">
+                                        <div className="d-flex flex-wrap gap-2">
+                                            {selectedFile.tags && selectedFile.tags.map((tag, i) => (
+                                                <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal">
+                                                    {tag}
+                                                </span>
+                                            ))}
+                                            {(!selectedFile.tags || selectedFile.tags.length === 0) && (
+                                                <span className="text-muted small">No tags</span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Summary */}
+                                    <div className="mb-4">
+                                        <h6 className="fw-bold mb-2">Summary</h6>
+                                        <div className="bg-light p-3 rounded-3 text-muted small" style={{ lineHeight: '1.6' }}>
+                                            {selectedFile.detail_summary || "No summary available for this file."}
+                                        </div>
+                                    </div>
+
+                                    {/* Meta Info */}
+                                    <div className="d-flex justify-content-between text-muted small mb-3">
+                                        <span>Type: {selectedFile.file_type.toUpperCase()}</span>
+                                        <span>Uploaded: {new Date(selectedFile.upload_date).toLocaleDateString()}</span>
+                                    </div>
+                                </div>
+                                <div className="modal-footer border-0 pt-0 flex-column gap-2">
+                                    <a href={selectedFile.url} target="_blank" rel="noopener noreferrer" className="btn bg-line-green text-white w-100 fw-bold py-2 rounded-3">
+                                        Download / View File
+                                    </a>
+                                    <div className="d-flex gap-2 w-100">
+                                        <button className="btn btn-outline-secondary flex-grow-1 rounded-3" onClick={() => { setSelectedFile(null); openEditModal(selectedFile); }}>
+                                            Edit
+                                        </button>
+                                        <button className="btn btn-outline-danger flex-grow-1 rounded-3" onClick={() => { setSelectedFile(null); handleDelete(selectedFile.id); }}>
+                                            Delete
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>

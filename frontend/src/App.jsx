@@ -4,8 +4,8 @@ import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Link 
 import liff from '@line/liff'
 import FileListView from './components/FileListView'
 import CalendarView from './components/CalendarView'
-import SearchView from './components/SearchView'
-import { Search, Calendar, FileText, Filter } from 'lucide-react'
+import ShareView from './components/ShareView'
+import { Search, Calendar, FileText, Share2 } from 'lucide-react'
 
 export const UserContext = createContext(null);
 
@@ -58,13 +58,23 @@ function AppContent() {
       })
   }, [])
 
+  const location = useLocation();
+
+  const getPageTitle = () => {
+    switch (location.pathname) {
+      case '/calendar': return 'Calendar';
+      case '/share': return 'Share';
+      default: return 'Files';
+    }
+  };
+
   return (
     <UserContext.Provider value={userId}>
       <div style={{ minHeight: '100vh', paddingBottom: '100px' }}>
         {/* Header */}
-        <header className="px-4 pt-4 pb-2 sticky-top bg-white">
+        <header className="px-4 pt-4 pb-3 sticky-top shadow-sm" style={{ backgroundColor: '#06c755', color: 'white', borderBottomLeftRadius: '24px', borderBottomRightRadius: '24px' }}>
           <div className="d-flex justify-content-between align-items-center">
-            <h1 className="fw-bold mb-0" style={{ fontSize: '28px' }}>Your Files</h1>
+            <h1 className="fw-bold mb-0" style={{ fontSize: '28px' }}>{getPageTitle()}</h1>
           </div>
         </header>
 
@@ -79,7 +89,7 @@ function AppContent() {
           <Routes>
             <Route path="/" element={<FileListView />} />
             <Route path="/calendar" element={<CalendarView />} />
-            <Route path="/search" element={<SearchView />} />
+            <Route path="/share" element={<ShareView />} />
           </Routes>
         </main>
 
@@ -87,7 +97,7 @@ function AppContent() {
         <nav className="bottom-nav">
           <NavItem to="/" icon={FileText} label="Files" />
           <NavItem to="/calendar" icon={Calendar} label="Calendar" />
-          <NavItem to="/search" icon={Search} label="Search" />
+          <NavItem to="/share" icon={Share2} label="Share" />
         </nav>
       </div>
     </UserContext.Provider>
