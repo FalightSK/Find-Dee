@@ -7,13 +7,15 @@ import logging
 import re
 from firebase_config import (
     save_file_metadata, save_user, upload_file_to_storage, 
-    search_files_by_tags, get_tag_pool, save_tag_pool, check_filename_exists
+    search_files_by_tags, get_tag_pool, save_tag_pool, check_filename_exists,
+    search_dates, get_upcoming_dates, get_dates_this_month, get_all_dates
 )
 from search.tagger import TagGenerator
 from search.deduplicator import TagDeduplicator
 from search.search import TagSearch
 
-# Configure Logging
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -157,11 +159,94 @@ def handle_line_event(event, line_bot_api):
                     
                     line_bot_api.reply_message(event.reply_token, messages_to_send)
             
-        elif text == r"/วันดี":
-            # Deadline list command
-            # TODO: Implement deadline fetching
-            reply_text = "📅 รายการ Deadline ที่ใกล้จะถึงครับ..."
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        elif text.startswith(r"/วันดี"):
+            # Event search command
+            query = text.replace(r"/วันดี", "").strip()
+            
+            found_dates = []
+            search_title = ""
+            
+            if not query:
+                # Default to upcoming if no query? Or ask for query.
+                # User asked for "check all upcoming event or all event of this month"
+                # Let's make empty query -> Upcoming
+                found_dates = get_upcoming_dates()
+                search_title = "กิจกรรมที่กำลังจะมาถึง"
+            elif query.lower() in ["upcoming", "เร็วๆนี้", "เร็วๆ นี้", "next"]:
+                found_dates = get_upcoming_dates()
+                search_title = "กิจกรรมที่กำลังจะมาถึง"
+            elif query.lower() in ["month", "this month", "เดือนนี้", "เดือน"]:
+                found_dates = get_dates_this_month()
+                search_title = "กิจกรรมในเดือนนี้"
+            else:
+                found_dates = search_dates(query)
+                search_title = f"ผลการค้นหา: {query}"
+            
+            if not found_dates:
+                reply_text = f"ไม่พบ{search_title} ครับ 📅"
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+            else:
+                # Create Flex Message Carousel
+                bubbles = []
+                for date_item in found_dates[:10]: # Limit to 10
+                    title = str(date_item.get('title', '')).strip() or "No Title"
+                    # Support both date fields
+                    date_time = str(date_item.get('date') or date_item.get('date_time') or '').strip() or "No Date"
+                    description = str(date_item.get('description', '')).strip()
+                    if not description:
+                        description = "-"
+                    
+                    bubble = {
+                        "type": "bubble",
+                        "header": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": title,
+                                    "weight": "bold",
+                                    "size": "lg",
+                                    "color": "#FFFFFF",
+                                    "wrap": True
+                                }
+                            ],
+                            "backgroundColor": "#FF6B6E", # Reddish for dates/deadlines
+                            "paddingAll": "lg"
+                        },
+                        "body": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": f"📅 {date_time}",
+                                    "size": "md",
+                                    "weight": "bold",
+                                    "margin": "md"
+                                },
+                                {
+                                    "type": "text",
+                                    "text": description,
+                                    "size": "sm",
+                                    "color": "#666666",
+                                    "wrap": True,
+                                    "margin": "md",
+                                    "maxLines": 3
+                                }
+                            ]
+                        }
+                    }
+                    bubbles.append(bubble)
+                    
+                flex_message = FlexSendMessage(
+                    alt_text=f"{search_title}: {len(found_dates)} รายการ",
+                    contents={
+                        "type": "carousel",
+                        "contents": bubbles
+                    }
+                )
+                line_bot_api.reply_message(event.reply_token, flex_message)
             
         else:
             # Check if user is in a specific mode or just chatting

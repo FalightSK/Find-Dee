@@ -57,3 +57,55 @@ class TagSearch:
         union = q_set.union(d_set)
         
         return len(intersection) / len(union) if union else 0.0
+
+    def filter_events(self, query: str, events: List[dict]) -> List[str]:
+        """
+        Uses LLM to filter events based on semantic meaning and relative dates.
+        Returns a list of event IDs.
+        """
+        if not events:
+            return []
+            
+        # Prepare simplified event list for token efficiency
+        simplified_events = []
+        for e in events:
+            simplified_events.append({
+                "id": e.get("id"),
+                "title": e.get("title"),
+                "date": e.get("date") or e.get("date_time"),
+                "description": e.get("description", "")
+            })
+            
+        events_json = json.dumps(simplified_events, ensure_ascii=False, indent=2)
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        prompt = f"""
+        Current Date: {today}
+        User Query: {query}
+        
+        Events List:
+        {events_json}
+        
+        Select the events that are relevant to the user's query. 
+        Consider relative dates (e.g. "next week", "tomorrow", "this weekend") and semantic meaning.
+        Return ONLY a JSON array of event IDs (strings).
+        """
+        
+        try:
+            response = self.model.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
+                )
+            )
+            text = response.text.strip()
+            if text.startswith("```json"):
+                text = text[7:-3]
+            elif text.startswith("```"):
+                text = text[3:-3]
+            return json.loads(text)
+        except Exception as e:
+            print(f"Error filtering events: {e}")
+            return []

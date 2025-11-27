@@ -332,3 +332,127 @@ def check_filename_exists(filename):
             return True
             
     return False
+
+def search_dates(query):
+    """
+    Searches for dates/events that match the query string.
+    Searches in 'title' and 'description' fields.
+    """
+    if not query:
+        return []
+        
+    dates_ref = db.reference('dates')
+    snapshot = dates_ref.get()
+    
+    matched_dates = []
+    if snapshot:
+        query_lower = query.lower()
+        
+        # Handle both list and dict structures just in case
+        items = []
+        if isinstance(snapshot, list):
+            for i, val in enumerate(snapshot):
+                if val:
+                    val['id'] = str(i)
+                    items.append(val)
+        elif isinstance(snapshot, dict):
+            for key, val in snapshot.items():
+                val['id'] = key
+                items.append(val)
+                
+        for val in items:
+            title = val.get('title', '').lower()
+            description = val.get('description', '').lower()
+            
+            if query_lower in title or query_lower in description:
+                matched_dates.append(val)
+                
+    return matched_dates
+
+def get_upcoming_dates():
+    """Retrieves all upcoming dates (from today onwards)."""
+    dates_ref = db.reference('dates')
+    snapshot = dates_ref.get()
+    
+    if not snapshot:
+        return []
+        
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    upcoming = []
+    
+    items = []
+    if isinstance(snapshot, list):
+        for i, val in enumerate(snapshot):
+            if val:
+                val['id'] = str(i)
+                items.append(val)
+    elif isinstance(snapshot, dict):
+        for key, val in snapshot.items():
+            val['id'] = key
+            items.append(val)
+            
+    for val in items:
+        # Check 'date' or 'date_time' field
+        date_str = val.get('date') or val.get('date_time')
+        if date_str and date_str >= today:
+            upcoming.append(val)
+            
+    # Sort by date
+    upcoming.sort(key=lambda x: x.get('date') or x.get('date_time') or "")
+    return upcoming
+
+def get_dates_this_month():
+    """Retrieves all dates in the current month."""
+    dates_ref = db.reference('dates')
+    snapshot = dates_ref.get()
+    
+    if not snapshot:
+        return []
+        
+    now = datetime.datetime.now()
+    current_month = now.strftime("%Y-%m")
+    
+    this_month = []
+    
+    items = []
+    if isinstance(snapshot, list):
+        for i, val in enumerate(snapshot):
+            if val:
+                val['id'] = str(i)
+                items.append(val)
+    elif isinstance(snapshot, dict):
+        for key, val in snapshot.items():
+            val['id'] = key
+            items.append(val)
+            
+    for val in items:
+        date_str = val.get('date') or val.get('date_time')
+        if date_str and date_str.startswith(current_month):
+            this_month.append(val)
+            
+    # Sort by date
+    this_month.sort(key=lambda x: x.get('date') or x.get('date_time') or "")
+    return this_month
+
+def get_all_dates():
+    """Retrieves all dates/events."""
+    dates_ref = db.reference('dates')
+    snapshot = dates_ref.get()
+    
+    if not snapshot:
+        return []
+        
+    all_dates = []
+    
+    items = []
+    if isinstance(snapshot, list):
+        for i, val in enumerate(snapshot):
+            if val:
+                val['id'] = str(i)
+                items.append(val)
+    elif isinstance(snapshot, dict):
+        for key, val in snapshot.items():
+            val['id'] = key
+            items.append(val)
+            
+    return items
