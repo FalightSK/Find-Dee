@@ -14,7 +14,7 @@ function NavItem({ to, icon: Icon, label }) {
   const isActive = location.pathname === to
 
   return (
-    <Link to={to} className={`nav - item ${isActive ? 'active' : ''} `}>
+    <Link to={to} className={`nav-item ${isActive ? 'active' : ''}`}>
       <Icon size={24} strokeWidth={isActive ? 2.5 : 2} />
       <span style={{ fontSize: '10px', fontWeight: 500 }}>{label}</span>
     </Link>
@@ -70,7 +70,7 @@ function AppContent() {
 
   return (
     <UserContext.Provider value={userId}>
-      <div style={{ minHeight: '100vh', paddingBottom: '100px' }}>
+      <div style={{ minHeight: '100vh', paddingBottom: '120px' }}>
         {/* Header */}
         <header className="px-4 pt-4 pb-3 sticky-top shadow-sm" style={{ backgroundColor: '#06c755', color: 'white', borderBottomLeftRadius: '24px', borderBottomRightRadius: '24px' }}>
           <div className="d-flex justify-content-between align-items-center">
