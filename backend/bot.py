@@ -79,36 +79,32 @@ def handle_line_event(event, line_bot_api):
                 logger.info(f"Search query: '{query}' -> Tags: {query_tags}")
                 
                 # 2. Search in Firebase
-                found_files = search_files_by_tags(query_tags)
+                # Determine context (Group or Private)
+                group_id = None
+                if event.source.type == 'group':
+                    group_id = event.source.group_id
+                elif event.source.type == 'room':
+                    group_id = event.source.room_id
+                
+                found_files = search_files_by_tags(query_tags, group_id=group_id, user_id=user_id)
                 
                 if not found_files:
                     reply_text = f"ไม่พบเอกสารที่เกี่ยวกับ: {', '.join(query_tags)} ครับ 😅"
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
                 else:
-                    # 3. Generate Meta-Summary
-                    summaries = [f.get('detail_summary') for f in found_files if f.get('detail_summary')]
-                    meta_summary = ""
-                    if summaries and tagger:
-                        meta_summary = tagger.summarize_group(summaries)
-                    
-                    messages_to_send = []
-                    
-                    if meta_summary:
-                        summary_text = f"สรุปภาพรวมของเอกสารที่พบ {len(found_files)} รายการครับ:\n\n{meta_summary}"
-                        messages_to_send.append(TextSendMessage(text=summary_text))
-                    
-                    # 4. Create Flex Message Carousel
+                    # 3. Create Flex Message Carousel
                     bubbles = []
                     for file in found_files[:10]: # Limit to 10
                         file_name = file.get('filename', 'Untitled')
                         file_url = file.get('url', '#')
-                        file_tags = file.get('tags', [])
-                        
-                        tag_text = ", ".join([f"#{t}" for t in file_tags[:3]])
-                        
+                        # Use detail_summary instead of tags
+                        file_summary = file.get('detail_summary', 'No summary available.')
+                        if not file_summary:
+                            file_summary = "No summary available."
+
                         bubble = {
                             "type": "bubble",
-                            "body": {
+                            "header": {
                                 "type": "box",
                                 "layout": "vertical",
                                 "contents": [
@@ -116,16 +112,26 @@ def handle_line_event(event, line_bot_api):
                                         "type": "text",
                                         "text": file_name,
                                         "weight": "bold",
-                                        "size": "md",
+                                        "size": "lg",
+                                        "color": "#FFFFFF",
                                         "wrap": True
-                                    },
+                                    }
+                                ],
+                                "backgroundColor": "#6cac6b", # Green for files
+                                "paddingAll": "lg"
+                            },
+                            "body": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
                                     {
                                         "type": "text",
-                                        "text": tag_text,
-                                        "size": "xs",
-                                        "color": "#aaaaaa",
+                                        "text": file_summary,
+                                        "size": "sm",
+                                        "color": "#666666",
                                         "wrap": True,
-                                        "margin": "sm"
+                                        "maxLines": 4,
+                                        "margin": "md"
                                     }
                                 ]
                             },
@@ -135,7 +141,8 @@ def handle_line_event(event, line_bot_api):
                                 "contents": [
                                     {
                                         "type": "button",
-                                        "style": "link",
+                                        "style": "primary",
+                                        "color": "#6cac6b",
                                         "height": "sm",
                                         "action": {
                                             "type": "uri",
@@ -147,7 +154,7 @@ def handle_line_event(event, line_bot_api):
                             }
                         }
                         bubbles.append(bubble)
-                        
+
                     flex_message = FlexSendMessage(
                         alt_text=f"ผลการค้นหา: {len(found_files)} รายการ",
                         contents={
@@ -155,9 +162,8 @@ def handle_line_event(event, line_bot_api):
                             "contents": bubbles
                         }
                     )
-                    messages_to_send.append(flex_message)
-                    
-                    line_bot_api.reply_message(event.reply_token, messages_to_send)
+
+                    line_bot_api.reply_message(event.reply_token, flex_message)
             
         elif text.startswith(r"/วันดี"):
             # Event search command
@@ -186,68 +192,122 @@ def handle_line_event(event, line_bot_api):
                 reply_text = f"ไม่พบ{search_title} ครับ 📅"
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             else:
-                # Create Flex Message Carousel
-                bubbles = []
+                # Create Single Bubble Flex Message
+                liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID")
+                calendar_url = f"https://liff.line.me/{liff_id}/calendar"
+
+                # Header
+                header = {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "รายการงานที่ต้องส่ง 📝",
+                            "weight": "bold",
+                            "size": "xl",
+                            "color": "#FFFFFF"
+                        }
+                    ],
+                    "backgroundColor": "#F87C63",
+                    "paddingAll": "lg"
+                }
+
+                # Body (List of tasks)
+                task_rows = []
                 for date_item in found_dates[:10]: # Limit to 10
                     title = str(date_item.get('title', '')).strip() or "No Title"
-                    # Support both date fields
-                    date_time = str(date_item.get('date') or date_item.get('date_time') or '').strip() or "No Date"
-                    description = str(date_item.get('description', '')).strip()
-                    if not description:
-                        description = "-"
+                    date_time = str(date_item.get('date') or date_item.get('date_time') or '').strip() or "-"
                     
-                    bubble = {
-                        "type": "bubble",
-                        "header": {
-                            "type": "box",
-                            "layout": "vertical",
-                            "contents": [
-                                {
-                                    "type": "text",
-                                    "text": title,
-                                    "weight": "bold",
-                                    "size": "lg",
-                                    "color": "#FFFFFF",
-                                    "wrap": True
-                                }
-                            ],
-                            "backgroundColor": "#FF6B6E", # Reddish for dates/deadlines
-                            "paddingAll": "lg"
-                        },
-                        "body": {
-                            "type": "box",
-                            "layout": "vertical",
-                            "contents": [
-                                {
-                                    "type": "text",
-                                    "text": f"📅 {date_time}",
-                                    "size": "md",
-                                    "weight": "bold",
-                                    "margin": "md"
-                                },
-                                {
-                                    "type": "text",
-                                    "text": description,
-                                    "size": "sm",
-                                    "color": "#666666",
-                                    "wrap": True,
-                                    "margin": "md",
-                                    "maxLines": 3
-                                }
-                            ]
-                        }
+                    row = {
+                        "type": "box",
+                        "layout": "horizontal",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": title,
+                                "size": "sm",
+                                "color": "#555555",
+                                "flex": 2,
+                                "wrap": True
+                            },
+                            {
+                                "type": "text",
+                                "text": date_time,
+                                "size": "sm",
+                                "color": "#111111",
+                                "align": "end",
+                                "flex": 1
+                            }
+                        ],
+                        "margin": "md"
                     }
-                    bubbles.append(bubble)
-                    
+                    task_rows.append(row)
+
+                if not task_rows:
+                    task_rows.append({
+                        "type": "text",
+                        "text": "ไม่มีรายการงานครับ",
+                        "size": "sm",
+                        "color": "#aaaaaa",
+                        "align": "center"
+                    })
+
+                body = {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": task_rows
+                }
+
+                # Footer
+                footer = {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "primary",
+                            "color": "#F87C63",
+                            "action": {
+                                "type": "uri",
+                                "label": "ดูปฏิทินเต็ม 📅",
+                                "uri": calendar_url
+                            }
+                        }
+                    ]
+                }
+
                 flex_message = FlexSendMessage(
-                    alt_text=f"{search_title}: {len(found_dates)} รายการ",
+                    alt_text="รายการงานที่ต้องส่ง 📝",
                     contents={
-                        "type": "carousel",
-                        "contents": bubbles
+                        "type": "bubble",
+                        "header": header,
+                        "body": body,
+                        "footer": footer
                     }
                 )
                 line_bot_api.reply_message(event.reply_token, flex_message)
             
+            
+        elif text == r"/เอาดี":
+            # Get Mini App Link
+            liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID")
+            mini_app_url = f"https://liff.line.me/{liff_id}"
+            reply_text = f"เข้าใช้งาน LINE Mini App ได้ที่นี่เลยครับ 👇\n{mini_app_url}"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+
+        elif text == r"/ไรดี":
+            # Help Menu
+            help_text = (
+                "รวมคำสั่งที่ใช้ได้ครับ 🤖\n\n"
+                "📂 /ฟายดี : ฝากไฟล์เข้าสู่ระบบ\n"
+                "🔍 /หาดี [คำค้น] : ค้นหาไฟล์เอกสาร\n"
+                "📅 /วันดี [คำค้น] : ดูกำหนดการ/งานที่ต้องส่ง\n"
+                "📱 /เอาดี : ขอลิงก์เข้าสู่ LINE Mini App\n"
+                "❓ /ไรดี : ดูคำสั่งทั้งหมดนี้"
+            )
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_text))
+
         else:
             # Check if user is in a specific mode or just chatting
             if user_states.get(user_id) == "waiting_for_file":

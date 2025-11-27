@@ -273,15 +273,21 @@ def delete_date(date_id):
         return True
     return False
 
-def search_files_by_tags(query_tags):
+def search_files_by_tags(query_tags, group_id=None, user_id=None):
     """
     Searches for files that contain at least one of the query tags.
+    Filters by group_id (if provided) or user_id (if group_id is None).
     Returns a list of file objects.
     """
     if not query_tags:
         return []
         
     files_ref = db.reference('files')
+    
+    # Optimization: If group_id is provided, we could query by group_id first
+    # But for prototype with small data, getting all and filtering is fine.
+    # Ideally: snapshot = files_ref.order_by_child('group_id').equal_to(group_id).get()
+    
     snapshot = files_ref.get()
     
     matched_files = []
@@ -290,6 +296,17 @@ def search_files_by_tags(query_tags):
         q_tags_lower = set(t.lower() for t in query_tags)
         
         for key, val in snapshot.items():
+            # 1. Access Control Filter
+            if group_id:
+                # In a group chat: only show files from this group
+                if val.get('group_id') != group_id:
+                    continue
+            elif user_id:
+                # In private chat: only show files owned by user
+                if val.get('owner_id') != user_id:
+                    continue
+            
+            # 2. Tag Matching
             file_tags = val.get('tags', [])
             if not file_tags:
                 continue
