@@ -210,8 +210,18 @@ def get_files_by_user(line_user_id):
     
     files = []
     if snapshot:
-        for key, val in snapshot.items():
-            val['id'] = key
+        items = []
+        if isinstance(snapshot, list):
+            for i, val in enumerate(snapshot):
+                if val:
+                    val['id'] = str(i)
+                    items.append(val)
+        elif isinstance(snapshot, dict):
+            for key, val in snapshot.items():
+                val['id'] = key
+                items.append(val)
+                
+        for val in items:
             # Backfill URL for legacy files
             if 'url' not in val and 'storage_path' in val and val['storage_path'].startswith('http'):
                 val['url'] = val['storage_path']
@@ -225,8 +235,18 @@ def get_files_by_group(group_id):
     
     files = []
     if snapshot:
-        for key, val in snapshot.items():
-            val['id'] = key
+        items = []
+        if isinstance(snapshot, list):
+            for i, val in enumerate(snapshot):
+                if val:
+                    val['id'] = str(i)
+                    items.append(val)
+        elif isinstance(snapshot, dict):
+            for key, val in snapshot.items():
+                val['id'] = key
+                items.append(val)
+                
+        for val in items:
             # Backfill URL for legacy files
             if 'url' not in val and 'storage_path' in val and val['storage_path'].startswith('http'):
                 val['url'] = val['storage_path']
@@ -295,7 +315,21 @@ def search_files_by_tags(query_tags, group_id=None, user_id=None):
         # Normalize query tags to lower case for case-insensitive matching
         q_tags_lower = set(t.lower() for t in query_tags)
         
-        for key, val in snapshot.items():
+        items = []
+        if isinstance(snapshot, list):
+            for i, val in enumerate(snapshot):
+                if val:
+                    val['id'] = str(i)
+                    items.append(val)
+        elif isinstance(snapshot, dict):
+            for key, val in snapshot.items():
+                val['id'] = key
+                items.append(val)
+        
+        for val in items:
+            if not isinstance(val, dict):
+                continue
+                
             # 1. Access Control Filter
             if group_id:
                 # In a group chat: only show files from this group
@@ -314,7 +348,6 @@ def search_files_by_tags(query_tags, group_id=None, user_id=None):
             # Check for intersection
             f_tags_lower = set(t.lower() for t in file_tags)
             if q_tags_lower.intersection(f_tags_lower):
-                val['id'] = key
                 # Backfill URL
                 if 'url' not in val and 'storage_path' in val and val['storage_path'].startswith('http'):
                     val['url'] = val['storage_path']
