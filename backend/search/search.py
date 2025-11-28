@@ -28,7 +28,7 @@ class TagSearch:
         {query}
         """
         response = self.model.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
         thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
@@ -94,12 +94,12 @@ class TagSearch:
         
         try:
             response = self.model.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0)
-                )
-            )
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+    )
+        )
             text = response.text.strip()
             if text.startswith("```json"):
                 text = text[7:-3]

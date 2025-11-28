@@ -185,7 +185,20 @@ def handle_line_event(event, line_bot_api):
                 found_dates = get_dates_this_month()
                 search_title = "กิจกรรมในเดือนนี้"
             else:
-                found_dates = search_dates(query)
+            else:
+                # Semantic Search using LLM
+                all_dates = get_all_dates()
+                relevant_ids = searcher.filter_events(query, all_dates)
+                
+                # Filter all_dates to keep only those in relevant_ids
+                found_dates = [d for d in all_dates if d.get('id') in relevant_ids]
+                
+                # If LLM returns nothing, maybe fallback to keyword search? 
+                # Or just trust the LLM. Let's trust the LLM for now, 
+                # but if it fails (empty), we could try exact match as backup.
+                if not found_dates:
+                     found_dates = search_dates(query)
+
                 search_title = f"ผลการค้นหา: {query}"
             
             if not found_dates:
