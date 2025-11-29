@@ -65,9 +65,12 @@ The core API for the LINE Mini App and Bot.
 
 **File Management:**
 - `GET /api/files/{user_id}`: Get files for a user (personal + group files).
-- `POST /api/upload`: Upload a file (multipart/form-data).
+- `POST /api/upload`: Upload a file (multipart/form-data). **Now includes AI-powered auto-tagging, summarization, and smart renaming.**
 - `PUT /api/files/{file_id}`: Update file metadata.
 - `DELETE /api/files/{file_id}`: Delete a file.
+
+**Search:**
+- `POST /api/search`: Semantic search for files with filtering by `user_id` and `group_id`.
 
 **Planner/Dates:**
 - `POST /api/dates`: Create a new date/task.
@@ -92,6 +95,110 @@ Interactive docs: `http://localhost:8001/docs`.
 ## Usage
 1.  **Upload**: Send an image or PDF to the bot. It will reply with generated tags.
 2.  **Search**: Type `/หาดี [query]` to find related documents.
+
+## API Usage Examples
+
+### Search API (Port 8000)
+
+**Search for tags in a query:**
+```bash
+curl -X POST "http://localhost:8000/search" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "query": "exam schedule for math",
+           "tag_pool": ["Exam", "Schedule", "Math", "Science"]
+         }'
+```
+
+**Generate Tags from Text:**
+```bash
+curl -X POST "http://localhost:8000/tags/generate" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "This document contains the syllabus for the Calculus I course, including limits, derivatives, and integrals."
+         }'
+```
+
+**Deduplicate Tags:**
+```bash
+curl -X POST "http://localhost:8000/tags/deduplicate" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "tags": ["Math", "Mathematics", "Calc", "Calculus"]
+         }'
+```
+
+### Main Backend API (Port 8001)
+
+**Get User Files:**
+```bash
+curl -X GET "http://localhost:8001/api/files/USER_ID_123"
+```
+
+**Upload a File:**
+```bash
+curl -X POST "http://localhost:8001/api/upload" \
+     -F "file=@/path/to/your/file.pdf" \
+     -F "user_id=USER_ID_123" \
+     -F "tags=Homework,Math"
+```
+
+**Semantic Search:**
+```bash
+curl -X POST "http://localhost:8001/api/search" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "query": "lecture notes for biology",
+           "user_id": "USER_ID_123"
+         }'
+```
+
+**Update File Metadata:**
+```bash
+curl -X PUT "http://localhost:8001/api/files/FILE_ID_123" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "filename": "Calculus_Syllabus_Final.pdf",
+           "tags": ["Syllabus", "Math", "Important"]
+         }'
+```
+
+**Delete a File:**
+```bash
+curl -X DELETE "http://localhost:8001/api/files/FILE_ID_123"
+```
+
+**Create a Date/Task:**
+```bash
+curl -X POST "http://localhost:8001/api/dates" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "title": "Math Homework Due",
+           "date": "2023-12-31",
+           "owner_id": "USER_ID_123",
+           "tags": ["Homework", "Math"],
+           "color": "danger"
+         }'
+```
+
+**Get User Dates:**
+```bash
+curl -X GET "http://localhost:8001/api/dates/USER_ID_123"
+```
+
+**Update a Date:**
+```bash
+curl -X PUT "http://localhost:8001/api/dates/DATE_ID_123" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "is_complete": true
+         }'
+```
+
+**Delete a Date:**
+```bash
+curl -X DELETE "http://localhost:8001/api/dates/DATE_ID_123"
+```
 
 ## System Diagram
 ![System Diagram](image.png)

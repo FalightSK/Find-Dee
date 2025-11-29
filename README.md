@@ -77,4 +77,5 @@ npm run dev
 
 ## 👥 Team
 - **Sittipon** - Developer
+- **Gussyy** - Developer
 # Find-Dee
