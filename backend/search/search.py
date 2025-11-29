@@ -69,6 +69,8 @@ class TagSearch:
         """
         # 1. Extract tags from query using the pool
         query_tags = self.extract_query_tags(query, tag_pool)
+        print("DEBUG: g_id", group_id)
+        print("DEBUG o_id:", owner_id)
         
         results = []
         for doc in documents:
