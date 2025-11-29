@@ -15,10 +15,9 @@ class TagSearch:
     def extract_query_tags(self, query: str, tag_pool: List[str] = None) -> List[str]:
         pool_str = json.dumps(tag_pool) if tag_pool else "[]"
         prompt = f"""
-        Extract key topics/tags from this search query.
+        Extract key topics/tags from this query.
         You MUST select tags ONLY from the provided Tag Pool.
-        If the query matches a tag in the pool (semantically), return that tag.
-        If the query does NOT match any tag in the pool, return ["other"].
+        If the query is not relevant to the tag pool, return ["other"].
         Do not consider the language of the query just focus on it intent.
         Return ONLY a JSON array of strings.
         
@@ -29,15 +28,18 @@ class TagSearch:
         {query}
         """
         response = self.model.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.1,
-                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+                thinking_config=types.ThinkingConfig(thinking_budget=64) # Disables thinking
             )
         )
         try:
             text = response.text.strip()
+            print("--------------")
+            print("DEBUG SEARCH: ", text)
+            print("--------------")
             if text.startswith("```json"):
                 text = text[7:-3]
             elif text.startswith("```"):
