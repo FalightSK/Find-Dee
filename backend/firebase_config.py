@@ -203,6 +203,18 @@ def get_user_profile(line_user_id):
     ref = db.reference(f'users/{line_user_id}')
     return ref.get()
 
+def get_all_users_map():
+    """Retrieves a map of user_id -> display_name for all users."""
+    ref = db.reference('users')
+    snapshot = ref.get()
+    
+    user_map = {}
+    if snapshot:
+        for key, val in snapshot.items():
+            if isinstance(val, dict):
+                user_map[key] = val.get('display_name', 'Unknown User')
+    return user_map
+
 def get_files_by_user(line_user_id):
     """Retrieves files uploaded by a specific user."""
     files_ref = db.reference('files')

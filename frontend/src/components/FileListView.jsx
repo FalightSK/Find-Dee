@@ -1,15 +1,22 @@
 import { useState, useEffect, useContext } from 'react';
-import { Search, MoreVertical, FileText, Image as ImageIcon, Plus, X, Upload, ArrowUpRight, Trash2, Edit2, ExternalLink } from 'lucide-react';
+import { Search, MoreVertical, FileText, Image as ImageIcon, Plus, X, Upload, ArrowUpRight, Trash2, Edit2, ExternalLink, Folder, ArrowLeft, Filter } from 'lucide-react';
 import { UserContext } from '../App';
 
 const FileListView = () => {
     const userId = useContext(UserContext);
     const [groupedFiles, setGroupedFiles] = useState([]);
+    const [knownUsers, setKnownUsers] = useState({});
     const [loading, setLoading] = useState(true);
     const [showUploadModal, setShowUploadModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
-    const [searchQuery, setSearchQuery] = useState('');
     const [uploading, setUploading] = useState(false);
+
+    // Navigation & Filter State
+    const [currentFolder, setCurrentFolder] = useState(null); // null = Home, object = Folder
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    const [isSearching, setIsSearching] = useState(false);
+    const [uploaderFilter, setUploaderFilter] = useState('');
 
     // Edit State
     const [editingFile, setEditingFile] = useState(null);
@@ -17,16 +24,6 @@ const FileListView = () => {
 
     // Detail Modal State
     const [selectedFile, setSelectedFile] = useState(null);
-
-    // Expanded Groups State
-    const [expandedGroups, setExpandedGroups] = useState({});
-
-    const toggleGroup = (index) => {
-        setExpandedGroups(prev => ({
-            ...prev,
-            [index]: !prev[index]
-        }));
-    };
 
     // Dropdown State
     const [activeDropdown, setActiveDropdown] = useState(null);
@@ -44,15 +41,58 @@ const FileListView = () => {
         return () => document.removeEventListener('click', handleClickOutside);
     }, []);
 
+    useEffect(() => {
+        if (searchQuery.trim()) {
+            performSearch();
+        }
+    }, [uploaderFilter]);
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') {
+            if (searchQuery.trim()) {
+                performSearch();
+            } else {
+                setSearchResults([]);
+                setIsSearching(false);
+            }
+        }
+    };
+
+    const performSearch = async () => {
+        setIsSearching(true);
+        try {
+            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+            const groupId = currentFolder ? currentFolder.group_id : null;
+
+            const response = await fetch(`${apiUrl}/api/search`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': 'true'
+                },
+                body: JSON.stringify({
+                    query: searchQuery,
+                    user_id: userId,
+                    group_id: groupId,
+                    owner_id: uploaderFilter || null
+                })
+            });
+
+            if (!response.ok) throw new Error('Search failed');
+
+            const data = await response.json();
+            setSearchResults(data.results || []);
+        } catch (error) {
+            console.error("Search error:", error);
+            setSearchResults([]);
+        } finally {
+            setIsSearching(false);
+        }
+    };
+
     const fetchFiles = async () => {
         try {
             const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-            // Check for URL params for filtering
-            const params = new URLSearchParams(window.location.search);
-            const tagFilter = params.get('tag');
-            const groupFilter = params.get('group_id');
-
             const response = await fetch(`${apiUrl}/api/files/${userId}`, {
                 headers: { 'ngrok-skip-browser-warning': 'true' }
             });
@@ -60,25 +100,8 @@ const FileListView = () => {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
             const data = await response.json();
-            let groups = data.groups || [];
-
-            // Apply filters if present
-            if (tagFilter || groupFilter || searchQuery) {
-                groups = groups.map(group => ({
-                    ...group,
-                    files: group.files.filter(file => {
-                        const matchesTag = tagFilter ? (file.tags && file.tags.includes(tagFilter)) : true;
-                        const matchesGroup = groupFilter ? file.group_id === groupFilter : true;
-                        const matchesSearch = searchQuery ? (
-                            file.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            (file.tags && file.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase())))
-                        ) : true;
-                        return matchesTag && matchesGroup && matchesSearch;
-                    })
-                })).filter(group => group.files.length > 0);
-            }
-
-            setGroupedFiles(groups);
+            setGroupedFiles(data.groups || []);
+            setKnownUsers(data.known_users || {});
         } catch (error) {
             console.error("Failed to fetch files:", error);
         } finally {
@@ -94,8 +117,14 @@ const FileListView = () => {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('user_id', userId);
-            // formData.append('group_id', '...'); // Optional: Add group selection logic later
-            // formData.append('tags', '...'); // Optional: Add tag input in upload modal
+
+            // If inside a folder (and it's not "My Uploads"), pre-fill group_id
+            if (currentFolder && currentFolder.group_name !== "My Uploads" && currentFolder.files.length > 0) {
+                const groupId = currentFolder.files[0].group_id;
+                if (groupId) {
+                    formData.append('group_id', groupId);
+                }
+            }
 
             const response = await fetch(`${apiUrl}/api/upload`, {
                 method: 'POST',
@@ -125,6 +154,18 @@ const FileListView = () => {
 
             if (!response.ok) throw new Error('Delete failed');
             await fetchFiles();
+            // If in folder view, we might need to update currentFolder files locally or re-fetch
+            // Re-fetching updates groupedFiles, but currentFolder is a separate state copy?
+            // Better to re-derive currentFolder from groupedFiles in render or update it.
+            // For simplicity, we'll just re-fetch and if the folder still exists, it updates.
+            // Actually, fetchFiles updates groupedFiles. currentFolder is a reference to one of them? 
+            // If it's a copy, it won't update. Let's handle this by finding the folder again.
+            const updatedGroups = await (await fetch(`${apiUrl}/api/files/${userId}`)).json();
+            setGroupedFiles(updatedGroups.groups || []);
+            if (currentFolder) {
+                const updatedFolder = updatedGroups.groups.find(g => g.group_name === currentFolder.group_name);
+                setCurrentFolder(updatedFolder || null);
+            }
         } catch (error) {
             alert('Delete failed: ' + error.message);
         }
@@ -157,6 +198,16 @@ const FileListView = () => {
 
             if (!response.ok) throw new Error('Update failed');
             await fetchFiles();
+
+            // Update current folder view if active
+            if (currentFolder) {
+                // Re-fetch to get updated data
+                const updatedGroups = await (await fetch(`${apiUrl}/api/files/${userId}`)).json();
+                setGroupedFiles(updatedGroups.groups || []);
+                const updatedFolder = updatedGroups.groups.find(g => g.group_name === currentFolder.group_name);
+                setCurrentFolder(updatedFolder || null);
+            }
+
             setShowEditModal(false);
         } catch (error) {
             alert('Update failed: ' + error.message);
@@ -175,123 +226,335 @@ const FileListView = () => {
         return 'bg-secondary bg-opacity-10';
     }
 
-    return (
-        <div className="mt-3">
-            {/* Search Bar */}
-            <div className="mb-4">
-                <div className="position-relative">
-                    <input
-                        type="text"
-                        className="form-control bg-clean-gray border-0 ps-5"
-                        placeholder="Search files..."
-                        style={{ borderRadius: '12px', height: '48px' }}
-                        value={searchQuery}
-                        onChange={(e) => {
-                            setSearchQuery(e.target.value);
-                            fetchFiles(); // Trigger re-filter
-                        }}
-                    />
-                    <Search className="position-absolute top-50 start-0 translate-middle-y ms-3 text-muted" size={18} />
-                </div>
-            </div>
+    const getUploaderName = (ownerId) => {
+        if (ownerId === userId) return "You";
+        return knownUsers[ownerId] || `User ${ownerId.substring(0, 4)}...`;
+    };
 
-            {/* File Sections */}
-            {loading ? (
-                <div className="text-center py-5 text-muted">Loading files...</div>
-            ) : groupedFiles.length === 0 ? (
-                <div className="text-center py-5 text-muted">No files found.</div>
-            ) : (
-                groupedFiles.map((group, index) => {
-                    const isExpanded = expandedGroups[index];
-                    const displayedFiles = isExpanded ? group.files : group.files.slice(0, 3);
-                    const hasMore = group.files.length > 3;
+    // --- Render Helpers ---
 
-                    return (
-                        <div key={index} className="mb-4">
-                            <div className="d-flex justify-content-between align-items-center mb-3 px-1">
-                                <h5 className="fw-bold mb-0">{group.group_name}</h5>
-                                {hasMore && (
+    // Filter files based on search and uploader
+    const getFilteredFiles = (files) => {
+        return files.filter(file => {
+            const matchesSearch = searchQuery ? (
+                file.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (file.tags && file.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase())))
+            ) : true;
+
+            const matchesUploader = uploaderFilter ? file.owner_id === uploaderFilter : true;
+
+            return matchesSearch && matchesUploader;
+        });
+    };
+
+    // Get unique uploaders for filter dropdown
+    const getUploadersInFolder = (files) => {
+        const uploaders = new Set(files.map(f => f.owner_id));
+        return Array.from(uploaders).map(id => ({
+            id,
+            name: getUploaderName(id)
+        }));
+    };
+
+    // --- Views ---
+
+    const renderHomeView = () => {
+        return (
+            <>
+                {/* Global Search Bar */}
+                <div className="d-flex gap-2 mb-4">
+                    <div className="position-relative flex-grow-1">
+                        <input
+                            type="text"
+                            className="form-control bg-clean-gray border-0 ps-5"
+                            placeholder="Search all files..."
+                            style={{ borderRadius: '12px', height: '48px' }}
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                        />
+                        <Search className="position-absolute top-50 start-0 translate-middle-y ms-3 text-muted" size={18} />
+                    </div>
+
+                    {/* Global Uploader Filter Dropdown */}
+                    <div className="dropdown">
+                        <button
+                            className={`btn h-100 px-3 d-flex align-items-center justify-content-center ${uploaderFilter ? 'btn-success text-white' : 'btn-light text-secondary'}`}
+                            style={{ borderRadius: '12px', minWidth: '48px' }}
+                            type="button"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            onClick={() => setActiveDropdown(activeDropdown === 'global-filter' ? null : 'global-filter')}
+                        >
+                            <Filter size={20} />
+                        </button>
+                        {activeDropdown === 'global-filter' && (
+                            <ul className="dropdown-menu show end-0 mt-2 shadow-sm border-0 rounded-3 p-2" style={{ minWidth: '200px', display: 'block', position: 'absolute', right: 0, zIndex: 1000 }}>
+                                <li><h6 className="dropdown-header">Filter by Uploader</h6></li>
+                                <li>
                                     <button
-                                        className="btn btn-link text-decoration-none text-success p-0 fw-medium"
-                                        style={{ fontSize: '14px' }}
-                                        onClick={() => toggleGroup(index)}
+                                        className={`dropdown-item rounded-2 ${uploaderFilter === '' ? 'active bg-success' : ''}`}
+                                        onClick={() => { setUploaderFilter(''); setActiveDropdown(null); }}
                                     >
-                                        {isExpanded ? 'Show Less' : `View all (${group.files.length})`}
+                                        All Uploaders
                                     </button>
-                                )}
-                            </div>
-                            <div className="d-flex flex-column gap-3">
-                                {displayedFiles.map((file) => (
+                                </li>
+                                {Object.entries(knownUsers).map(([id, name]) => (
+                                    <li key={id}>
+                                        <button
+                                            className={`dropdown-item rounded-2 ${uploaderFilter === id ? 'active bg-success' : ''}`}
+                                            onClick={() => { setUploaderFilter(id); setActiveDropdown(null); }}
+                                        >
+                                            {name}
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+                </div>
+
+                {/* Folder Grid (Hide when searching) */}
+                {!searchQuery && (
+                    <>
+                        <h6 className="fw-bold mb-3 text-secondary">Folders</h6>
+                        <div className="row g-3">
+                            {groupedFiles.map((group, index) => (
+                                <div key={index} className="col-6">
                                     <div
-                                        key={file.id}
-                                        className="card border-0 shadow-sm"
-                                        style={{ borderRadius: '16px', cursor: 'pointer' }}
-                                        onClick={() => setSelectedFile(file)}
+                                        className="card border-0 shadow-sm h-100"
+                                        style={{ borderRadius: '16px', cursor: 'pointer', transition: 'transform 0.2s' }}
+                                        onClick={() => {
+                                            setCurrentFolder(group);
+                                            setSearchQuery(''); // Clear global search when entering folder
+                                            setSearchResults([]);
+                                            setUploaderFilter('');
+                                        }}
                                     >
-                                        <div className="card-body p-3">
-                                            <div className="d-flex align-items-start">
-                                                {/* File Icon */}
-                                                <div className={`file-icon ${getIconBgColor(file.file_type)} me-3 flex-shrink-0`} style={{ width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px' }}>
-                                                    {getFileIcon(file.file_type)}
-                                                </div>
-
-                                                {/* File Info */}
-                                                <div className="flex-grow-1" style={{ minWidth: 0 }}>
-                                                    <div className="d-flex justify-content-between align-items-start">
-                                                        <h6 className="card-title mb-1 fw-bold text-truncate pe-2" style={{ fontSize: '15px' }}>{file.filename}</h6>
-
-                                                        {/* Actions Dropdown */}
-                                                        <div className="position-relative ms-2">
-                                                            <button
-                                                                className="btn btn-link text-muted p-0"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    setActiveDropdown(activeDropdown === file.id ? null : file.id);
-                                                                }}
-                                                            >
-                                                                <MoreVertical size={20} />
-                                                            </button>
-
-                                                            {activeDropdown === file.id && (
-                                                                <div className="position-absolute end-0 mt-2 bg-white shadow-sm rounded-3 py-2" style={{ zIndex: 100, minWidth: '150px', border: '1px solid #eee' }}>
-                                                                    <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2" onClick={(e) => { e.stopPropagation(); openEditModal(file); }}>
-                                                                        <Edit2 size={16} /> Edit
-                                                                    </button>
-                                                                    <a href={file.url} target="_blank" rel="noopener noreferrer" className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-decoration-none text-dark" onClick={(e) => e.stopPropagation()}>
-                                                                        <ExternalLink size={16} /> Preview
-                                                                    </a>
-                                                                    <div className="dropdown-divider my-1 border-top"></div>
-                                                                    <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-danger" onClick={(e) => { e.stopPropagation(); handleDelete(file.id); }}>
-                                                                        <Trash2 size={16} /> Delete
-                                                                    </button>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-
-                                                    {/* Tags & Date */}
-                                                    <div className="d-flex align-items-center flex-wrap gap-1 mt-1">
-                                                        {file.tags && file.tags.slice(0, 3).map((tag, i) => (
-                                                            <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                                {tag}
-                                                            </span>
-                                                        ))}
-                                                        {file.tags && file.tags.length > 3 && (
-                                                            <span className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px' }}>
-                                                                +{file.tags.length - 3}
-                                                            </span>
-                                                        )}
-                                                        <small className="text-muted ms-auto" style={{ fontSize: '10px' }}>{new Date(file.upload_date).toLocaleDateString()}</small>
-                                                    </div>
-                                                </div>
+                                        <div className="card-body p-3 d-flex flex-column align-items-center text-center">
+                                            <div className={`rounded-circle p-3 mb-3 ${group.group_name === 'My Uploads' ? 'bg-primary bg-opacity-10 text-primary' : 'bg-warning bg-opacity-10 text-warning'}`}>
+                                                <Folder size={32} fill={group.group_name === 'My Uploads' ? "currentColor" : "currentColor"} />
                                             </div>
+                                            <h6 className="fw-bold mb-1 text-truncate w-100">{group.group_name}</h6>
+                                            <small className="text-muted">{group.files.length} files</small>
                                         </div>
                                     </div>
+                                </div>
+                            ))}
+                        </div>
+                    </>
+                )}
+
+                {/* Global Search Results (if searching) */}
+                {searchQuery && (
+                    <div className="mt-4">
+                        <h6 className="fw-bold mb-3 text-secondary">Search Results</h6>
+                        {isSearching ? (
+                            <div className="text-center py-5">
+                                <div className="spinner-border text-success" role="status">
+                                    <span className="visually-hidden">Loading...</span>
+                                </div>
+                                <p className="text-muted mt-2">Searching...</p>
+                            </div>
+                        ) : (
+                            <div className="d-flex flex-column gap-3">
+                                {searchResults.map(file => renderFileCard(file))}
+                                {searchResults.length === 0 && <div className="text-center text-muted">No files match your search.</div>}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </>
+        );
+    };
+
+    const renderFolderView = () => {
+        if (!currentFolder) return null;
+
+        let displayFiles = [];
+        if (searchQuery) {
+            displayFiles = searchResults;
+        } else {
+            displayFiles = currentFolder.files.filter(file =>
+                uploaderFilter ? file.owner_id === uploaderFilter : true
+            );
+        }
+
+        const uploaders = getUploadersInFolder(currentFolder.files);
+
+        return (
+            <>
+                {/* Header */}
+                <div className="d-flex align-items-center mb-4">
+                    <button
+                        className="btn btn-light rounded-circle p-2 me-3 shadow-sm"
+                        onClick={() => {
+                            setCurrentFolder(null);
+                            setSearchQuery('');
+                            setSearchResults([]);
+                            setUploaderFilter('');
+                        }}
+                    >
+                        <ArrowLeft size={20} />
+                    </button>
+                    <h5 className="fw-bold mb-0">{currentFolder.group_name}</h5>
+                </div>
+
+                {/* Scoped Search & Filter */}
+                <div className="d-flex gap-2 mb-4">
+                    <div className="position-relative flex-grow-1">
+                        <input
+                            type="text"
+                            className="form-control bg-clean-gray border-0 ps-5"
+                            placeholder="Search in folder..."
+                            style={{ borderRadius: '12px', height: '48px' }}
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                        />
+                        <Search className="position-absolute top-50 start-0 translate-middle-y ms-3 text-muted" size={18} />
+                    </div>
+
+                    {/* Uploader Filter Dropdown */}
+                    <div className="dropdown">
+                        <button
+                            className={`btn h-100 px-3 d-flex align-items-center justify-content-center ${uploaderFilter ? 'btn-success text-white' : 'btn-light text-secondary'}`}
+                            style={{ borderRadius: '12px', minWidth: '48px' }}
+                            type="button"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            onClick={() => setActiveDropdown(activeDropdown === 'filter' ? null : 'filter')}
+                        >
+                            <Filter size={20} />
+                        </button>
+                        {activeDropdown === 'filter' && (
+                            <ul className="dropdown-menu show end-0 mt-2 shadow-sm border-0 rounded-3 p-2" style={{ minWidth: '200px', display: 'block', position: 'absolute', right: 0, zIndex: 1000 }}>
+                                <li><h6 className="dropdown-header">Filter by Uploader</h6></li>
+                                <li>
+                                    <button
+                                        className={`dropdown-item rounded-2 ${uploaderFilter === '' ? 'active bg-success' : ''}`}
+                                        onClick={() => { setUploaderFilter(''); setActiveDropdown(null); }}
+                                    >
+                                        All Uploaders
+                                    </button>
+                                </li>
+                                {uploaders.map(u => (
+                                    <li key={u.id}>
+                                        <button
+                                            className={`dropdown-item rounded-2 ${uploaderFilter === u.id ? 'active bg-success' : ''}`}
+                                            onClick={() => { setUploaderFilter(u.id); setActiveDropdown(null); }}
+                                        >
+                                            {u.name}
+                                        </button>
+                                    </li>
                                 ))}
+                            </ul>
+                        )}
+                    </div>
+                </div>
+
+                {/* File List */}
+                <div className="d-flex flex-column gap-3">
+                    {isSearching ? (
+                        <div className="text-center py-5">
+                            <div className="spinner-border text-success" role="status">
+                                <span className="visually-hidden">Loading...</span>
+                            </div>
+                            <p className="text-muted mt-2">Searching...</p>
+                        </div>
+                    ) : (
+                        displayFiles.length > 0 ? (
+                            displayFiles.map(file => renderFileCard(file))
+                        ) : (
+                            <div className="text-center py-5 text-muted">
+                                {searchQuery ? "No files match your search." : "No files found in this folder."}
+                            </div>
+                        )
+                    )}
+                </div>
+            </>
+        );
+    };
+
+    const renderFileCard = (file) => (
+        <div
+            key={file.id}
+            className="card border-0 shadow-sm"
+            style={{ borderRadius: '16px', cursor: 'pointer' }}
+            onClick={() => setSelectedFile(file)}
+        >
+            <div className="card-body p-3">
+                <div className="d-flex align-items-start">
+                    {/* File Icon */}
+                    <div className={`file-icon ${getIconBgColor(file.file_type)} me-3 flex-shrink-0`} style={{ width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px' }}>
+                        {getFileIcon(file.file_type)}
+                    </div>
+
+                    {/* File Info */}
+                    <div className="flex-grow-1" style={{ minWidth: 0 }}>
+                        <div className="d-flex justify-content-between align-items-start">
+                            <h6 className="card-title mb-1 fw-bold text-truncate pe-2" style={{ fontSize: '15px' }}>{file.filename}</h6>
+
+                            {/* Actions Dropdown */}
+                            <div className="position-relative ms-2">
+                                <button
+                                    className="btn btn-link text-muted p-0"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveDropdown(activeDropdown === file.id ? null : file.id);
+                                    }}
+                                >
+                                    <MoreVertical size={20} />
+                                </button>
+
+                                {activeDropdown === file.id && (
+                                    <div className="position-absolute end-0 mt-2 bg-white shadow-sm rounded-3 py-2" style={{ zIndex: 100, minWidth: '150px', border: '1px solid #eee' }}>
+                                        <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2" onClick={(e) => { e.stopPropagation(); openEditModal(file); }}>
+                                            <Edit2 size={16} /> Edit
+                                        </button>
+                                        <a href={file.url} target="_blank" rel="noopener noreferrer" className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-decoration-none text-dark" onClick={(e) => e.stopPropagation()}>
+                                            <ExternalLink size={16} /> Preview
+                                        </a>
+                                        <div className="dropdown-divider my-1 border-top"></div>
+                                        <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-danger" onClick={(e) => { e.stopPropagation(); handleDelete(file.id); }}>
+                                            <Trash2 size={16} /> Delete
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
-                    );
-                })
+
+                        {/* Uploader Name */}
+                        <div className="text-muted small mb-1" style={{ fontSize: '11px' }}>
+                            Uploaded by: <span className="fw-medium text-dark">{getUploaderName(file.owner_id)}</span>
+                        </div>
+
+                        {/* Tags & Date */}
+                        <div className="d-flex align-items-center flex-wrap gap-1 mt-1">
+                            {file.tags && file.tags.slice(0, 3).map((tag, i) => (
+                                <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {tag}
+                                </span>
+                            ))}
+                            {file.tags && file.tags.length > 3 && (
+                                <span className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px' }}>
+                                    +{file.tags.length - 3}
+                                </span>
+                            )}
+                            <small className="text-muted ms-auto" style={{ fontSize: '10px' }}>{new Date(file.upload_date).toLocaleDateString()}</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+
+    return (
+        <div className="mt-3">
+            {loading ? (
+                <div className="text-center py-5 text-muted">Loading files...</div>
+            ) : (
+                currentFolder ? renderFolderView() : renderHomeView()
             )}
 
             {/* Floating Action Button */}
@@ -414,6 +677,9 @@ const FileListView = () => {
                                     <div className="d-flex justify-content-between text-muted small mb-3">
                                         <span>Type: {selectedFile.file_type.toUpperCase()}</span>
                                         <span>Uploaded: {new Date(selectedFile.upload_date).toLocaleDateString()}</span>
+                                    </div>
+                                    <div className="text-muted small mb-3">
+                                        Uploaded by: {getUploaderName(selectedFile.owner_id)}
                                     </div>
                                 </div>
                                 <div className="modal-footer border-0 pt-0 flex-column gap-2">

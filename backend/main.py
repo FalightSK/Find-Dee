@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage, FileMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage, FileMessage, PostbackEvent
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,10 +22,7 @@ from firebase_config import (
     get_user_profile, 
     get_files_by_group, 
     get_files_by_user,
-    save_date,
-    get_dates_by_user,
-    update_date,
-    delete_date
+    get_all_users_map
 )
 
 app = FastAPI()
@@ -39,6 +37,22 @@ app.add_middleware(
 
 # Initialize Firebase
 firebase_app = initialize_firebase()
+
+# Initialize Services
+from search.tagger import TagGenerator
+from search.deduplicator import TagDeduplicator
+from search.search import TagSearch
+from firebase_config import get_tag_pool, save_tag_pool, check_filename_exists, get_candidate_files
+
+try:
+    tagger = TagGenerator()
+    deduplicator = TagDeduplicator()
+    searcher = TagSearch()
+except Exception as e:
+    print(f"Warning: Could not initialize search services: {e}")
+    tagger = None
+    deduplicator = None
+    searcher = None
 
 # LINE Bot configuration
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
@@ -89,49 +103,206 @@ async def get_user_files(user_id: str):
                 "files": files
             })
             
-    return {"groups": grouped_files}
+    # 3. Get User Map for resolving owner names
+    known_users = get_all_users_map()
+            
+    return {"groups": grouped_files, "known_users": known_users}
+
+import re
+
+class SearchRequest(BaseModel):
+    query: str
+    user_id: str
+    group_id: Optional[str] = None
+    owner_id: Optional[str] = None # For filtering by uploader
+
+@app.post("/api/search")
+async def search_files(request: SearchRequest):
+    try:
+        if not searcher:
+             raise HTTPException(status_code=503, detail="Search service unavailable")
+             
+        # 1. Fetch Tag Pool
+        tag_pool = get_tag_pool() or []
+        
+        # 2. Extract Tags
+        query_tags = searcher.extract_query_tags(request.query, tag_pool)
+        
+        # 3. Get Candidate Files
+        candidate_files = []
+        
+        if request.group_id:
+            # Scoped Search: Only files in this group
+            candidate_files = get_files_by_group(request.group_id)
+        else:
+            # Global Search: All files accessible to user (Personal + Groups)
+            # 3.1 Personal Files
+            personal_files = get_files_by_user(request.user_id)
+            candidate_files.extend(personal_files)
+            
+            # 3.2 Group Files
+            user_profile = get_user_profile(request.user_id)
+            if user_profile:
+                groups = user_profile.get('groups', {})
+                for group_id, group_name in groups.items():
+                    if group_name is True: continue # Legacy check
+                    group_files = get_files_by_group(group_id)
+                    candidate_files.extend(group_files)
+                    
+        # Deduplicate candidates by ID (just in case)
+        seen_ids = set()
+        unique_candidates = []
+        for f in candidate_files:
+            f_id = f.get('id')
+            if f_id and f_id not in seen_ids:
+                seen_ids.add(f_id)
+                unique_candidates.append(f)
+        
+        # 4. Search & Rank
+        found_files = searcher.search_documents(
+            request.query, 
+            unique_candidates, 
+            tag_pool, 
+            group_id=request.group_id, 
+            owner_id=request.owner_id # Use the filter provided by frontend
+        )
+        
+        return {
+            "query": request.query,
+            "extracted_tags": query_tags,
+            "results": found_files
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload")
 async def upload_file(
     file: UploadFile = File(...),
     user_id: str = Form(...),
     group_id: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None) # Comma separated
+    tags: Optional[str] = Form(None) # Comma separated, optional manual tags
 ):
     try:
         # 1. Validate file type
         filename = file.filename
-        ext = os.path.splitext(filename)[1].lower()
-        file_type = 'other'
-        if ext in ['.jpg', '.jpeg', '.png']:
-            file_type = 'image'
-        elif ext == '.pdf':
-            file_type = 'pdf'
+        ext = os.path.splitext(filename)[1].lower().replace('.', '')
+        if not ext:
+            ext = "jpg" # Default
             
-        # 2. Upload to Storage
-        file_bytes = await file.read()
-        storage_path = f"uploads/{user_id}/{uuid.uuid4()}{ext}"
-        public_url = upload_bytes_to_storage(file_bytes, storage_path, file.content_type)
+        file_type = 'other'
+        mime_type = file.content_type
         
-        # 3. Save Metadata
-        tag_list = [t.strip() for t in tags.split(',')] if tags else []
+        if ext in ['jpg', 'jpeg', 'png']:
+            file_type = 'image'
+            if not mime_type: mime_type = "image/jpeg"
+        elif ext == 'pdf':
+            file_type = 'pdf'
+            if not mime_type: mime_type = "application/pdf"
+            
+        # 2. Save temporarily for AI analysis
+        temp_save_path = f"temp_{uuid.uuid4()}.{ext}"
+        with open(temp_save_path, "wb") as buffer:
+            import shutil
+            shutil.copyfileobj(file.file, buffer)
+            
+        # 3. AI Analysis (Tagging & Summarization)
+        generated_metadata = {"tags": [], "title": "Untitled", "summary": ""}
         
+        if tagger:
+            try:
+                generated_metadata = tagger.generate_metadata(temp_save_path, mime_type)
+            except Exception as e:
+                print(f"Tag generation failed: {e}")
+                
+        raw_tags = generated_metadata.get("tags", [])
+        
+        # Merge manual tags if provided
+        if tags:
+            manual_tags = [t.strip() for t in tags.split(',')]
+            raw_tags.extend(manual_tags)
+            
+        # 4. Deduplication & Tag Pool Update
+        final_tags = raw_tags
+        if deduplicator and raw_tags:
+            final_tags = deduplicator.deduplicate(raw_tags)
+            
+        # Update Global Tag Pool
+        tag_pool = get_tag_pool() or []
+        if deduplicator and final_tags:
+            combined_pool = list(set(tag_pool + final_tags))
+            tag_pool = deduplicator.deduplicate(combined_pool)
+            save_tag_pool(tag_pool)
+        elif final_tags:
+            tag_pool.extend(final_tags)
+            tag_pool = list(set(tag_pool))
+            save_tag_pool(tag_pool)
+            
+        if not final_tags:
+            final_tags = ["Uncategorized"]
+            
+        # 5. Smart Renaming
+        mock_name = generated_metadata.get("title", filename)
+        mock_summary = generated_metadata.get("summary", "No summary available")
+        suggested_filename = generated_metadata.get("suggested_filename", "")
+        
+        base_name = "untitled_file"
+        if suggested_filename:
+            base_name = suggested_filename
+        elif file_type == 'pdf':
+             base_name = os.path.splitext(filename)[0]
+        else:
+             # Sanitize title
+             base_name = re.sub(r'[<>:"/\\|?*]', '', mock_name).replace(' ', '_')
+             
+        # Ensure uniqueness
+        count = 0
+        while True:
+            candidate_name = f"{base_name}.{ext}" if count == 0 else f"{base_name}_{count}.{ext}"
+            if not check_filename_exists(candidate_name):
+                final_filename = candidate_name
+                break
+            count += 1
+            
+        # 6. Upload to Storage
+        # Re-open temp file to upload
+        with open(temp_save_path, "rb") as f:
+            file_bytes = f.read()
+            
+        storage_path = f"uploads/{user_id}/{final_filename}"
+        public_url = upload_bytes_to_storage(file_bytes, storage_path, mime_type)
+        
+        # 7. Save Metadata
         file_data = {
-            'filename': filename,
-            'file_type': file_type,
+            'filename': final_filename,
+            'file_type': ext,
             'storage_path': storage_path,
             'url': public_url,
             'owner_id': user_id,
             'group_id': group_id,
-            'tags': tag_list,
-            'version': 'v1'
+            'tags': final_tags,
+            'version': 'v1',
+            'detail_summary': mock_summary,
+            'due_date_id': None
         }
         
         file_id = save_file_metadata(file_data)
         
-        return {"file_id": file_id, "url": public_url, "message": "File uploaded successfully"}
+        # Cleanup
+        if os.path.exists(temp_save_path):
+            os.remove(temp_save_path)
+        
+        return {
+            "file_id": file_id, 
+            "url": public_url, 
+            "filename": final_filename,
+            "tags": final_tags,
+            "summary": mock_summary,
+            "message": "File uploaded and analyzed successfully"
+        }
         
     except Exception as e:
+        if 'temp_save_path' in locals() and os.path.exists(temp_save_path):
+            os.remove(temp_save_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/files/{file_id}")
@@ -155,57 +326,6 @@ async def delete_file_endpoint(file_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class DateCreate(BaseModel):
-    title: str
-    date: str # YYYY-MM-DD
-    tags: Optional[List[str]] = []
-    owner_id: str
-    color: Optional[str] = "primary"
-
-class DateUpdate(BaseModel):
-    title: Optional[str] = None
-    date: Optional[str] = None
-    tags: Optional[List[str]] = None
-    color: Optional[str] = None
-    is_complete: Optional[bool] = None
-
-@app.post("/api/dates")
-async def create_date(date: DateCreate):
-    try:
-        date_data = date.dict()
-        date_id = save_date(date_data)
-        return {"date_id": date_id, "message": "Date created successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/dates/{user_id}")
-async def get_user_dates(user_id: str):
-    try:
-        dates = get_dates_by_user(user_id)
-        return {"dates": dates}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/dates/{date_id}")
-async def update_date_endpoint(date_id: str, updates: DateUpdate):
-    try:
-        update_dict = updates.dict(exclude_unset=True)
-        success = update_date(date_id, update_dict)
-        if not success:
-            raise HTTPException(status_code=404, detail="Date not found")
-        return {"message": "Date updated successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/dates/{date_id}")
-async def delete_date_endpoint(date_id: str):
-    try:
-        success = delete_date(date_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Date not found")
-        return {"message": "Date deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/callback")
 async def callback(request: Request):
@@ -226,6 +346,10 @@ async def callback(request: Request):
 
 @handler.add(MessageEvent, message=(TextMessage, ImageMessage, FileMessage))
 def handle_message(event):
+    handle_line_event(event, line_bot_api)
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
     handle_line_event(event, line_bot_api)
 
 if __name__ == "__main__":

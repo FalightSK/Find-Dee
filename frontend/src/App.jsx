@@ -3,9 +3,9 @@ import { useState, useEffect, createContext } from 'react'
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom'
 import liff from '@line/liff'
 import FileListView from './components/FileListView'
-import CalendarView from './components/CalendarView'
 import ShareView from './components/ShareView'
-import { Search, Calendar, FileText, Share2 } from 'lucide-react'
+import SettingsView from './components/SettingsView'
+import { Search, FileText, Share2, Settings } from 'lucide-react'
 
 export const UserContext = createContext(null);
 
@@ -62,8 +62,8 @@ function AppContent() {
 
   const getPageTitle = () => {
     switch (location.pathname) {
-      case '/calendar': return 'Calendar';
       case '/share': return 'Share';
+      case '/settings': return 'Settings';
       default: return 'Files';
     }
   };
@@ -88,16 +88,16 @@ function AppContent() {
 
           <Routes>
             <Route path="/" element={<FileListView />} />
-            <Route path="/calendar" element={<CalendarView />} />
             <Route path="/share" element={<ShareView />} />
+            <Route path="/settings" element={<SettingsView />} />
           </Routes>
         </main>
 
         {/* Bottom Navigation */}
         <nav className="bottom-nav">
           <NavItem to="/" icon={FileText} label="Files" />
-          <NavItem to="/calendar" icon={Calendar} label="Calendar" />
           <NavItem to="/share" icon={Share2} label="Share" />
+          <NavItem to="/settings" icon={Settings} label="Settings" />
         </nav>
       </div>
     </UserContext.Provider>

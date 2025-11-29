@@ -1,21 +1,18 @@
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
-    ImageMessage, FileMessage, FlexSendMessage
+    ImageMessage, FileMessage, FlexSendMessage, PostbackEvent
 )
 import os
 import logging
 import re
+import json
+import requests
 from firebase_config import (
     save_file_metadata, save_user, upload_file_to_storage, 
-    search_files_by_tags, get_tag_pool, save_tag_pool, check_filename_exists,
-    search_dates, get_upcoming_dates, get_dates_this_month, get_all_dates,
-    get_candidate_files
+    get_tag_pool, save_tag_pool, check_filename_exists
 )
 from search.tagger import TagGenerator
 from search.deduplicator import TagDeduplicator
-from search.search import TagSearch
-
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,584 +27,425 @@ logger = logging.getLogger(__name__)
 try:
     tagger = TagGenerator()
     deduplicator = TagDeduplicator()
-    searcher = TagSearch()
 except Exception as e:
     logger.error(f"Warning: Could not initialize search services: {e}")
     tagger = None
     deduplicator = None
-    searcher = None
 
-# Simple in-memory state for prototype: {user_id: "mode"}
+# In-memory state management
+# Structure: { user_id: { "state": "STATE_NAME", "data": { ... } } }
 user_states = {}
+
+# States
+STATE_WAITING_FOR_FILE = "WAITING_FOR_FILE"
+STATE_CONFIRMING_UPLOAD = "CONFIRMING_UPLOAD"
 
 def sanitize_filename(name):
     """Sanitizes a string to be safe for filenames."""
-    # Remove invalid characters
     name = re.sub(r'[<>:"/\\|?*]', '', name)
-    # Replace spaces with underscores
     name = name.replace(' ', '_')
     return name
 
 def handle_line_event(event, line_bot_api):
     user_id = event.source.user_id
-
-    # Fetch Tag Pool from Firebase
-    tag_pool = get_tag_pool()
-    if not tag_pool:
-        tag_pool = ["Lecture", "Homework", "Exam", "Schedule", "Payment"]
-
-    # print(user_states.get(user_id)) # Replaced with debug log if needed, or just remove
     
-    if isinstance(event.message, TextMessage):
-        text = event.message.text.strip()
+    # --- Handle Postback Events (Button Clicks) ---
+    if isinstance(event, PostbackEvent):
+        data = event.postback.data
+        params = {}
+        try:
+            # Parse query string style data (e.g., "action=confirm&file_id=123")
+            for part in data.split('&'):
+                key, value = part.split('=')
+                params[key] = value
+        except:
+            pass
+            
+        action = params.get('action')
         
-        if text == r"/ฟายดี":
-            # Enter file saving mode
-            user_states[user_id] = "waiting_for_file"
-            reply_text = "เข้าสู่โหมดรับฝากไฟล์ครับ 📂\nกรุณาส่งรูปภาพ 🖼️ หรือไฟล์ PDF 📄 มาได้เลยครับ"
+        if action == 'send_file':
+            user_states[user_id] = {"state": STATE_WAITING_FOR_FILE, "data": {}}
+            reply_text = "กรุณาส่งไฟล์รูปภาพ 🖼️ หรือ PDF 📄 ที่ต้องการฝากมาได้เลยครับ"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             
-        elif text.startswith(r"/หาดี"):
-            # Search command
-            query = text.replace(r"/หาดี", "").strip()
-            
-            if not searcher:
-                reply_text = "ระบบค้นหายังไม่พร้อมใช้งานครับ"
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-            else:
-                # 1. Extract Tags from Query
-                query_tags = searcher.extract_query_tags(query, tag_pool)
-                logger.info(f"Search query: '{query}' -> Tags: {query_tags}")
-                
-                # 2. Search in Firebase
-                # Determine context (Group or Private)
-                group_id = None
-                if event.source.type == 'group':
-                    group_id = event.source.group_id
-                elif event.source.type == 'room':
-                    group_id = event.source.room_id
-                
-                # Get candidate files (all files accessible in this context)
-                candidate_files = get_candidate_files(group_id=group_id, user_id=user_id)
-                
-                # Perform search using the searcher
-                found_files = searcher.search_documents(query, candidate_files, tag_pool, group_id=group_id, owner_id=user_id)
-                
-                if not found_files:
-                    reply_text = f"ไม่พบเอกสารที่เกี่ยวกับ: {', '.join(query_tags)} ครับ 😅"
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-                else:
-                    # 3. Create Flex Message Carousel
-                    bubbles = []
-                    for file in found_files[:10]: # Limit to 10
-                        file_name = file.get('filename', 'Untitled')
-                        file_url = file.get('url', '#')
-                        # Use detail_summary instead of tags
-                        file_summary = file.get('detail_summary', 'No summary available.')
-                        if not file_summary:
-                            file_summary = "No summary available."
-
-                        bubble = {
-                            "type": "bubble",
-                            "header": {
-                                "type": "box",
-                                "layout": "vertical",
-                                "contents": [
-                                    {
-                                        "type": "text",
-                                        "text": file_name,
-                                        "weight": "bold",
-                                        "size": "lg",
-                                        "color": "#FFFFFF",
-                                        "wrap": True
-                                    }
-                                ],
-                                "backgroundColor": "#6cac6b", # Green for files
-                                "paddingAll": "lg"
-                            },
-                            "body": {
-                                "type": "box",
-                                "layout": "vertical",
-                                "contents": [
-                                    {
-                                        "type": "text",
-                                        "text": file_summary,
-                                        "size": "sm",
-                                        "color": "#666666",
-                                        "wrap": True,
-                                        "maxLines": 4,
-                                        "margin": "md"
-                                    }
-                                ]
-                            },
-                            "footer": {
-                                "type": "box",
-                                "layout": "vertical",
-                                "contents": [
-                                    {
-                                        "type": "button",
-                                        "style": "primary",
-                                        "color": "#6cac6b",
-                                        "height": "sm",
-                                        "action": {
-                                            "type": "uri",
-                                            "label": "Download",
-                                            "uri": file_url
-                                        }
-                                    }
-                                ]
-                            }
-                        }
-                        bubbles.append(bubble)
-
-                    flex_message = FlexSendMessage(
-                        alt_text=f"ผลการค้นหา: {len(found_files)} รายการ",
-                        contents={
-                            "type": "carousel",
-                            "contents": bubbles
-                        }
-                    )
-
-                    line_bot_api.reply_message(event.reply_token, flex_message)
-            
-        elif text.startswith(r"/วันดี"):
-            # Event search command
-            query = text.replace(r"/วันดี", "").strip()
-            
-            found_dates = []
-            search_title = ""
-            
-            if not query:
-                # Default to upcoming if no query? Or ask for query.
-                # User asked for "check all upcoming event or all event of this month"
-                # Let's make empty query -> Upcoming
-                found_dates = get_upcoming_dates()
-                search_title = "กิจกรรมที่กำลังจะมาถึง"
-            elif query.lower() in ["upcoming", "เร็วๆนี้", "เร็วๆ นี้", "next"]:
-                found_dates = get_upcoming_dates()
-                search_title = "กิจกรรมที่กำลังจะมาถึง"
-            elif query.lower() in ["month", "this month", "เดือนนี้", "เดือน"]:
-                found_dates = get_dates_this_month()
-                search_title = "กิจกรรมในเดือนนี้"
-            else:
-                # Semantic Search using LLM
-                all_dates = get_all_dates()
-                relevant_ids = searcher.filter_events(query, all_dates)
-                
-                # Filter all_dates to keep only those in relevant_ids
-                found_dates = [d for d in all_dates if d.get('id') in relevant_ids]
-                
-                # If LLM returns nothing, maybe fallback to keyword search? 
-                # Or just trust the LLM. Let's trust the LLM for now, 
-                # but if it fails (empty), we could try exact match as backup.
-                if not found_dates:
-                     found_dates = search_dates(query)
-
-                search_title = f"ผลการค้นหา: {query}"
-            
-            if not found_dates:
-                reply_text = f"ไม่พบ{search_title} ครับ 📅"
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-            else:
-                # Create Single Bubble Flex Message
-                liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID")
-                calendar_url = f"https://liff.line.me/{liff_id}/calendar"
-
-                # Header
-                header = {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {
-                            "type": "text",
-                            "text": "รายการงานที่ต้องส่ง 📝",
-                            "weight": "bold",
-                            "size": "xl",
-                            "color": "#FFFFFF"
-                        }
-                    ],
-                    "backgroundColor": "#F87C63",
-                    "paddingAll": "lg"
-                }
-
-                # Body (List of tasks)
-                task_rows = []
-                for date_item in found_dates[:10]: # Limit to 10
-                    title = str(date_item.get('title', '')).strip() or "No Title"
-                    date_time = str(date_item.get('date') or date_item.get('date_time') or '').strip() or "-"
-                    
-                    row = {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": title,
-                                "size": "sm",
-                                "color": "#555555",
-                                "flex": 2,
-                                "wrap": True
-                            },
-                            {
-                                "type": "text",
-                                "text": date_time,
-                                "size": "sm",
-                                "color": "#111111",
-                                "align": "end",
-                                "flex": 1
-                            }
-                        ],
-                        "margin": "md"
-                    }
-                    task_rows.append(row)
-
-                if not task_rows:
-                    task_rows.append({
-                        "type": "text",
-                        "text": "ไม่มีรายการงานครับ",
-                        "size": "sm",
-                        "color": "#aaaaaa",
-                        "align": "center"
-                    })
-
-                body = {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": task_rows
-                }
-
-                # Footer
-                footer = {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {
-                            "type": "button",
-                            "style": "primary",
-                            "color": "#F87C63",
-                            "action": {
-                                "type": "uri",
-                                "label": "ดูปฏิทินเต็ม 📅",
-                                "uri": calendar_url
-                            }
-                        }
-                    ]
-                }
-
-                flex_message = FlexSendMessage(
-                    alt_text="รายการงานที่ต้องส่ง 📝",
-                    contents={
-                        "type": "bubble",
-                        "header": header,
-                        "body": body,
-                        "footer": footer
-                    }
-                )
-                line_bot_api.reply_message(event.reply_token, flex_message)
-            
-            
-        elif text == r"/เอาดี":
-            # Get Mini App Link
+        elif action == 'search_file':
+            # Link to Mini App
             liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID")
             mini_app_url = f"https://liff.line.me/{liff_id}"
-            reply_text = f"เข้าใช้งาน LINE Mini App ได้ที่นี่เลยครับ 👇\n{mini_app_url}"
+            reply_text = f"ค้นหาไฟล์ได้ที่นี่เลยครับ 👇\n{mini_app_url}"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+            
+        elif action == 'settings':
+            reply_text = "ฟีเจอร์ตั้งค่ากำลังมาเร็วๆ นี้ครับ ⚙️"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+            
+        elif action == 'confirm_upload':
+            # Process the uploaded file
+            state = user_states.get(user_id)
+            if state and state.get('state') == STATE_CONFIRMING_UPLOAD:
+                # Show Loading Animation
+                try:
+                    url = "https://api.line.me/v2/bot/chat/loading/start"
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {os.getenv('LINE_CHANNEL_ACCESS_TOKEN')}"
+                    }
+                    payload = {
+                        "chatId": user_id,
+                        "loadingSeconds": 20 # Max 60, 20 should be enough for AI
+                    }
+                    requests.post(url, headers=headers, json=payload)
+                except Exception as e:
+                    logger.error(f"Failed to send loading animation: {e}")
+                
+                # Process (using original reply_token)
+                process_upload(event, line_bot_api, user_id, state['data'])
+                user_states.pop(user_id, None)
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="หมดเวลาการยืนยันครับ กรุณาเริ่มใหม่"))
+                
+        elif action == 'cancel_upload':
+            user_states.pop(user_id, None)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกการส่งไฟล์เรียบร้อยครับ ❌"))
 
-        elif text == r"/ไรดี":
-            # Help Menu
-            help_text = (
-                "รวมคำสั่งที่ใช้ได้ครับ 🤖\n\n"
-                "📂 /ฟายดี : ฝากไฟล์เข้าสู่ระบบ\n"
-                "🔍 /หาดี [คำค้น] : ค้นหาไฟล์เอกสาร\n"
-                "📅 /วันดี [คำค้น] : ดูกำหนดการ/งานที่ต้องส่ง\n"
-                "📱 /เอาดี : ขอลิงก์เข้าสู่ LINE Mini App\n"
-                "❓ /ไรดี : ดูคำสั่งทั้งหมดนี้"
-            )
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_text))
-
+    # --- Handle Text Messages ---
+    elif isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
+        text = event.message.text.strip()
+        
+        if text == "ฟายดี":
+            # Send Main Menu Flex Message
+            send_main_menu(event, line_bot_api)
         else:
-            # Check if user is in a specific mode or just chatting
-            if user_states.get(user_id) == "waiting_for_file":
-                reply_text = "ผมกำลังรอไฟล์อยู่นะครับ 😅\nถ้าต้องการยกเลิก ให้พิมพ์ 'ยกเลิก' ครับ"
+            # Check if waiting for file but user sent text
+            state = user_states.get(user_id)
+            if state and state.get('state') == STATE_WAITING_FOR_FILE:
                 if text == "ยกเลิก":
                     user_states.pop(user_id, None)
-                    reply_text = "ยกเลิกโหมดรับฝากไฟล์เรียบร้อยครับ"
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-    
-    elif isinstance(event.message, (ImageMessage, FileMessage)):
-        if user_states.get(user_id) == "waiting_for_file":
-            logger.info(f"Retrieving file from user: {user_id}")
-            
-            # Determine file type first
-            file_type = "image" if isinstance(event.message, ImageMessage) else "file"
-            original_filename = "unknown"
-            
-            # File Type Validation
-            if file_type == "image":
-                # LINE images are typically JPEGs. We'll use jpg as default.
-                extension = "jpg" 
-            elif file_type == "file":
-                # Check if it is PDF
-                file_name = event.message.file_name
-                original_filename = file_name
-                if not file_name.lower().endswith(".pdf"):
-                    reply_text = "ขออภัยครับ รองรับเฉพาะไฟล์ PDF 📄 และรูปภาพ 🖼️ เท่านั้นครับ"
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-                    return
-                extension = "pdf"
-            else:
-                return
-
-            # Handle file upload
-            message_id = event.message.id
-            message_content = line_bot_api.get_message_content(message_id)
-            
-            # Save temporarily with ID first
-            temp_save_path = f"/tmp/{message_id}.{extension}"
-            
-            with open(temp_save_path, 'wb') as fd:
-                for chunk in message_content.iter_content():
-                    fd.write(chunk)
-            
-            logger.info(f"File saved locally to {temp_save_path}")
-
-            # Call SLM to categorize and version the file
-            generated_metadata = {"tags": [], "title": "Untitled", "summary": ""}
-            
-            if tagger:
-                mime_type = "image/jpeg" if extension in ["jpg", "jpeg", "png"] else "application/pdf"
-                logger.info(f"Starting tag generation for {temp_save_path} ({mime_type})")
-                try:
-                    generated_metadata = tagger.generate_metadata(temp_save_path, mime_type)
-                    tags_found = generated_metadata.get("tags", [])
-                    if tags_found:
-                        logger.info(f"Tags generated successfully: {tags_found}")
-                    else:
-                        logger.warning("Tag generation returned empty list.")
-                except Exception as e:
-                    logger.error(f"Tag generation failed: {e}")
-            else:
-                logger.warning("TagGenerator service is not available.")
-            
-            raw_tags = generated_metadata.get("tags", [])
-            
-            # Deduplicate tags
-            final_tags = raw_tags
-            if deduplicator:
-                final_tags = deduplicator.deduplicate(raw_tags)
-            
-            # Update Global Tag Pool
-            # Add new tags to the pool and re-deduplicate to ensure semantic consistency
-            if deduplicator and final_tags:
-                logger.info(f"Updating tag pool. Current size: {len(tag_pool)}")
-                # Combine and remove exact duplicates first
-                combined_pool = list(set(tag_pool + final_tags))
-                # Semantic deduplication on the whole pool
-                tag_pool = deduplicator.deduplicate(combined_pool)
-                # Save back to Firebase
-                save_tag_pool(tag_pool)
-                logger.info(f"Tag pool updated and saved. New size: {len(tag_pool)}")
-            elif final_tags:
-                tag_pool.extend(final_tags)
-                tag_pool = list(set(tag_pool))
-                save_tag_pool(tag_pool)
-
-            # Fallback if no tags
-            if not final_tags:
-                final_tags = ["Uncategorized"]
-
-            mock_tags = final_tags
-            mock_name = generated_metadata.get("title", f"File-{message_id}")
-            mock_summary = generated_metadata.get("summary", "No summary available")
-            suggested_filename = generated_metadata.get("suggested_filename", "")
-
-            # --- Smart Rename Logic ---
-            # 1. Determine Base Name
-            base_name = "untitled_file"
-            
-            if suggested_filename:
-                base_name = suggested_filename
-            elif file_type == "file" and original_filename != "unknown":
-                # Fallback to original filename (without extension) if AI didn't suggest one
-                base_name = os.path.splitext(original_filename)[0]
-                base_name = sanitize_filename(base_name)
-            else:
-                # Fallback to sanitized title
-                base_name = sanitize_filename(mock_name)
-            
-            # 2. Ensure Uniqueness Loop
-            count = 0
-            while True:
-                if count == 0:
-                    candidate_name = f"{base_name}.{extension}"
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกเรียบร้อยครับ"))
                 else:
-                    candidate_name = f"{base_name}_{count}.{extension}"
-                
-                if not check_filename_exists(candidate_name):
-                    final_filename = candidate_name
-                    break
-                count += 1
-            
-            logger.info(f"Final filename determined: {final_filename}")
-            
-            # Save to Firebase
-            
-            # Fetch User Profile
-            try:
-                profile = line_bot_api.get_profile(user_id)
-                display_name = profile.display_name
-            except:
-                display_name = "Unknown User"
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ผมกำลังรอไฟล์อยู่นะครับ 😅 (พิมพ์ 'ยกเลิก' เพื่อออก)"))
 
-            # Get Group ID and Name if available
-            group_id = None
-            group_name = None
-            
-            if event.source.type == 'group':
-                group_id = event.source.group_id
-                try:
-                    summary = line_bot_api.get_group_summary(group_id)
-                    group_name = summary.group_name
-                except:
-                    group_name = "Unknown Group"
-            elif event.source.type == 'room':
-                group_id = event.source.room_id
-                group_name = "Room" # Rooms don't have names in the same way
-
-            # Ensure user exists and track group
-            save_user(user_id, display_name, group_id, group_name) 
-            
-            # Upload to Firebase Storage
-            blob_name = f"uploads/{user_id}/{final_filename}"
-            public_url = upload_file_to_storage(temp_save_path, blob_name)
-            
-            file_data = {
-                "filename": final_filename, 
-                "file_type": extension, # png or pdf
-                "storage_path": blob_name, 
-                "url": public_url, 
-                "owner_id": user_id,
-                "group_id": group_id, 
-                "tags": mock_tags,
-                "version": "v1",
-                "detail_summary": mock_summary, 
-                "due_date_id": None
-            }
-            
-            file_id = save_file_metadata(file_data)
-            
-            # Clean up local temp file
-            if os.path.exists(temp_save_path):
-                os.remove(temp_save_path)
-            
-            # Create Flex Message
-            liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID") # Fallback if not set
-            mini_app_url = f"https://miniapp.line.me/{liff_id}"
-            
-            # Create Tag Bubbles (Pills)
-            tag_contents = []
-            for tag in mock_tags:
-                tag_contents.append({
-                    "type": "text",
-                    "text": f"#{tag}",
-                    "color": "#06C755",
-                    "size": "sm",
-                    "flex": 0,
-                    "margin": "xs"
-                })
-
-            flex_message = FlexSendMessage(
-                alt_text="จัดการเรียบร้อยครับ! ✅",
-                contents={
-                    "type": "bubble",
-                    "header": {
-                        "type": "box",
-                        "layout": "vertical",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": "จัดการเรียบร้อยครับ! ✅",
-                                "weight": "bold",
-                                "size": "md",
-                                "color": "#F8F8F8" 
-                            },
-                            {
-                                "type": "text",
-                                "text": final_filename,
-                                "size": "xs",
-                                "color": "#F2F3F2",
-                                "wrap": True,
-                                "margin": "xs"
-                            }
-                        ],
-                        "backgroundColor": "#96C678",
-                        "paddingAll": "lg"
-                    },
-                    "body": {
-                        "type": "box",
-                        "layout": "vertical",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": "Tags:",
-                                "size": "sm",
-                                "color": "#555555",
-                                "margin": "sm",
-                                "weight": "bold"
-                            },
-                            {
-                                "type": "box",
-                                "layout": "horizontal",
-                                "contents": tag_contents,
-                                "wrap": True,
-                                "margin": "sm"
-                            },
-                            {
-                                "type": "separator",
-                                "margin": "lg"
-                            },
-                            {
-                                "type": "text",
-                                "text": "ทำการจัดเก็บไฟล์ไว้ที่นี่",
-                                "size": "sm",
-                                "color": "#06C755",
-                                "margin": "lg",
-                                "align": "center",
-                                "action": {
-                                    "type": "uri",
-                                    "label": "Download",
-                                    "uri": public_url
-                                },
-                                "decoration": "underline"
-                            }
-                        ]
-                    },
-                    "footer": {
-                        "type": "box",
-                        "layout": "vertical",
-                        "spacing": "sm",
-                        "contents": [
-                            {
-                                "type": "button",
-                                "style": "primary",
-                                "height": "sm",
-                                "action": {
-                                    "type": "uri",
-                                    "label": "จัดการเพิ่มเติมได้ที่ MINI APP",
-                                    "uri": mini_app_url
-                                },
-                                "color": "#96C678"
-                            }
-                        ]
-                    }
-                }
-            )
-            
-            line_bot_api.reply_message(event.reply_token, flex_message)
-            
-            # Reset state
-            user_states.pop(user_id, None)
+    # --- Handle File/Image Messages ---
+    elif isinstance(event, MessageEvent) and isinstance(event.message, (ImageMessage, FileMessage)):
+        state = user_states.get(user_id)
+        if state and state.get('state') == STATE_WAITING_FOR_FILE:
+            handle_file_upload_request(event, line_bot_api, user_id)
         else:
-            # Ignore files if not in saving mode? Or maybe auto-save?
-            # For now, let's ignore to avoid spam, or give a hint.
+            # Ignore or hint
             pass
+
+def send_main_menu(event, line_bot_api):
+    flex_message = FlexSendMessage(
+        alt_text="เมนูหลัก ฟายดี",
+        contents={
+            "type": "bubble",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "จะทำอะไรเลือกเลย 😎",
+                        "weight": "bold",
+                        "size": "xl",
+                        "color": "#FFFFFF",
+                        "align": "center"
+                    }
+                ],
+                "backgroundColor": "#06C755",
+                "paddingAll": "lg"
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "action": {
+                            "type": "postback",
+                            "label": "ส่งไฟล์ 📤",
+                            "data": "action=send_file",
+                            "displayText": "ส่งไฟล์"
+                        },
+                        "color": "#06C755"
+                    },
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "action": {
+                            "type": "postback",
+                            "label": "ค้นหาไฟล์ 🔍",
+                            "data": "action=search_file",
+                            "displayText": "ค้นหาไฟล์"
+                        }
+                    },
+                    {
+                        "type": "button",
+                        "style": "link",
+                        "action": {
+                            "type": "postback",
+                            "label": "ตั้งค่า ⚙️",
+                            "data": "action=settings",
+                            "displayText": "ตั้งค่า"
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    line_bot_api.reply_message(event.reply_token, flex_message)
+
+def handle_file_upload_request(event, line_bot_api, user_id):
+    # 1. Save file temporarily
+    message_id = event.message.id
+    message_content = line_bot_api.get_message_content(message_id)
+    
+    file_type = "image" if isinstance(event.message, ImageMessage) else "file"
+    extension = "jpg"
+    original_filename = "unknown"
+    
+    if file_type == "file":
+        original_filename = event.message.file_name
+        if not original_filename.lower().endswith(".pdf"):
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ขออภัยครับ รองรับเฉพาะ PDF และรูปภาพครับ"))
+            return
+        extension = "pdf"
+    
+    temp_path = f"/tmp/{message_id}.{extension}"
+    with open(temp_path, 'wb') as fd:
+        for chunk in message_content.iter_content():
+            fd.write(chunk)
+            
+    # 2. Prepare Data for Confirmation (Skip AI Tagging here)
+    mock_name = f"File-{message_id}"
+    if file_type == "file":
+        mock_name = os.path.splitext(original_filename)[0]
+        
+    # Store in state
+    user_states[user_id] = {
+        "state": STATE_CONFIRMING_UPLOAD,
+        "data": {
+            "temp_path": temp_path,
+            "extension": extension,
+            "original_filename": original_filename,
+            "mock_name": mock_name,
+            "file_type": file_type
+        }
+    }
+    
+    # 3. Send Confirmation Flex
+    flex_message = FlexSendMessage(
+        alt_text="ยืนยันการส่งไฟล์",
+        contents={
+            "type": "bubble",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "ยืนยันข้อมูลไฟล์ 📄", "weight": "bold", "size": "lg", "color": "#FFFFFF"}
+                ],
+                "backgroundColor": "#06C755"
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "ชื่อไฟล์:", "size": "sm", "color": "#888888"},
+                    {"type": "text", "text": f"{mock_name}.{extension}", "size": "md", "weight": "bold", "wrap": True},
+                    {"type": "separator", "margin": "md"},
+                    {"type": "text", "text": "ระบบจะทำการวิเคราะห์และติด Tag ให้หลังจากยืนยันครับ 🤖", "size": "xs", "color": "#aaaaaa", "wrap": True, "margin": "md"}
+                ]
+            },
+            "footer": {
+                "type": "box",
+                "layout": "horizontal",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "action": {
+                            "type": "postback",
+                            "label": "ยกเลิก",
+                            "data": "action=cancel_upload"
+                        }
+                    },
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#06C755",
+                        "action": {
+                            "type": "postback",
+                            "label": "ยืนยัน",
+                            "data": "action=confirm_upload"
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    line_bot_api.reply_message(event.reply_token, flex_message)
+
+def process_upload(event, line_bot_api, user_id, data):
+    temp_path = data['temp_path']
+    extension = data['extension']
+    mock_name = data['mock_name']
+    
+    # 1. Analyze (Tagging) - Now done here to save tokens
+    generated_metadata = {"tags": [], "title": mock_name, "summary": ""}
+    
+    if tagger:
+        mime_type = "image/jpeg" if extension in ["jpg", "jpeg", "png"] else "application/pdf"
+        try:
+            # Notify user that processing is starting (optional, but good UX)
+            # line_bot_api.push_message(user_id, TextSendMessage(text="กำลังวิเคราะห์ไฟล์... ⏳")) 
+            # Note: push_message might cost, but here we are replying to postback. 
+            # We can't easily send an intermediate message and then another reply token message without push.
+            # Let's just do it and hope it's fast enough.
+            
+            generated_metadata = tagger.generate_metadata(temp_path, mime_type)
+        except Exception as e:
+            logger.error(f"Tagging failed: {e}")
+
+    # 2. Deduplicate Tags
+    tags = generated_metadata.get("tags", [])
+    if deduplicator:
+        tags = deduplicator.deduplicate(tags)
+        
+    # Update Tag Pool
+    tag_pool = get_tag_pool() or []
+    if tags:
+        tag_pool = list(set(tag_pool + tags))
+        save_tag_pool(tag_pool)
+        
+    if not tags:
+        tags = ["Uncategorized"]
+        
+    # 3. Determine Final Filename
+    # Use AI title if available and different from generic
+    ai_title = generated_metadata.get("title")
+    suggested_filename = generated_metadata.get("suggested_filename")
+    
+    base_name = sanitize_filename(mock_name)
+    if suggested_filename:
+        base_name = suggested_filename
+    elif ai_title and ai_title != "Untitled":
+         base_name = sanitize_filename(ai_title)
+         
+    count = 0
+    while True:
+        candidate = f"{base_name}.{extension}" if count == 0 else f"{base_name}_{count}.{extension}"
+        if not check_filename_exists(candidate):
+            final_filename = candidate
+            break
+        count += 1
+        
+    # 4. Upload to Storage
+    blob_name = f"uploads/{user_id}/{final_filename}"
+    public_url = upload_file_to_storage(temp_path, blob_name)
+    
+    # 5. Save Metadata
+    # Get User Info
+    try:
+        profile = line_bot_api.get_profile(user_id)
+        display_name = profile.display_name
+    except:
+        display_name = "Unknown User"
+        
+    # Get Group Info
+    group_id = None
+    group_name = None
+    if event.source.type == 'group':
+        group_id = event.source.group_id
+        try:
+            summary = line_bot_api.get_group_summary(group_id)
+            group_name = summary.group_name
+        except:
+            group_name = "Unknown Group"
+            
+    save_user(user_id, display_name, group_id, group_name)
+    
+    file_data = {
+        "filename": final_filename,
+        "file_type": extension,
+        "storage_path": blob_name,
+        "url": public_url,
+        "owner_id": user_id,
+        "group_id": group_id,
+        "tags": tags,
+        "version": "v1",
+        "detail_summary": generated_metadata.get("summary", ""),
+        "due_date_id": None
+    }
+    
+    save_file_metadata(file_data)
+    
+    # Cleanup
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
+        
+    # 6. Send Success Message
+    liff_id = os.getenv("LIFF_ID", "YOUR_LIFF_ID")
+    mini_app_url = f"https://liff.line.me/{liff_id}"
+    
+    # Create Tag Bubbles
+    tag_contents = []
+    for tag in tags:
+        tag_contents.append({
+            "type": "text",
+            "text": f"#{tag}",
+            "color": "#06C755",
+            "size": "sm",
+            "flex": 0,
+            "margin": "xs"
+        })
+
+    flex_message = FlexSendMessage(
+        alt_text="บันทึกไฟล์สำเร็จ ✅",
+        contents={
+            "type": "bubble",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "บันทึกไฟล์สำเร็จ! ✅", "weight": "bold", "size": "lg", "color": "#FFFFFF"}
+                ],
+                "backgroundColor": "#06C755"
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": final_filename, "weight": "bold", "size": "md", "wrap": True},
+                    {"type": "text", "text": "ถูกจัดเก็บเรียบร้อยแล้ว", "size": "sm", "color": "#666666", "margin": "sm"},
+                    {"type": "separator", "margin": "md"},
+                    {
+                        "type": "box",
+                        "layout": "horizontal",
+                        "contents": tag_contents,
+                        "wrap": True,
+                        "margin": "md"
+                    }
+                ]
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#06C755",
+                        "action": {
+                            "type": "uri",
+                            "label": "ดูไฟล์ใน Mini App",
+                            "uri": mini_app_url
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    line_bot_api.reply_message(event.reply_token, flex_message)
