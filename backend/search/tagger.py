@@ -33,9 +33,10 @@ class TagGenerator:
             )
             
             response = self.model.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=[sample_file, prompt],
                 config=types.GenerateContentConfig(
+                temperature=0,
                 thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
                 )
             )
@@ -60,11 +61,12 @@ class TagGenerator:
         {document_text}
         """
         response = self.model.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
-    )
+                temperature=0,
+                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+            )
         )
         try:
             text = response.text.strip()
@@ -94,9 +96,10 @@ class TagGenerator:
         
         try:
             response = self.model.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
+                    temperature=0,
                     thinking_config=types.ThinkingConfig(thinking_budget=0)
                 )
             )

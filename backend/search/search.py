@@ -17,8 +17,9 @@ class TagSearch:
         prompt = f"""
         Extract key topics/tags from this search query.
         You MUST select tags ONLY from the provided Tag Pool.
-        If the query matches a tag in the pool (semantically or exactly), return that tag.
+        If the query matches a tag in the pool (semantically), return that tag.
         If the query does NOT match any tag in the pool, return ["other"].
+        Do not consider the language of the query just focus on it intent.
         Return ONLY a JSON array of strings.
         
         Tag Pool:
@@ -31,8 +32,9 @@ class TagSearch:
             model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
-    )
+                temperature=0.1,
+                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+            )
         )
         try:
             text = response.text.strip()
@@ -57,6 +59,35 @@ class TagSearch:
         union = q_set.union(d_set)
         
         return len(intersection) / len(union) if union else 0.0
+
+    def search_documents(self, query: str, documents: List[dict], tag_pool: List[str], group_id: str = None, owner_id: str = None) -> List[dict]:
+        """
+        Searches documents by extracting tags from the query and matching them against document tags.
+        Optional: filters by group_id or owner_id if provided.
+        """
+        # 1. Extract tags from query using the pool
+        query_tags = self.extract_query_tags(query, tag_pool)
+        
+        results = []
+        for doc in documents:
+            # Filter logic
+            if group_id and doc.get("group_id") != group_id:
+                continue
+            if owner_id and doc.get("owner_id") != owner_id:
+                continue
+
+            doc_tags = doc.get("tags", [])
+            score = self.match(query_tags, doc_tags)
+            
+            if score > 0:
+                # Return a copy of the doc with the score added
+                result_doc = doc.copy()
+                result_doc["_score"] = score
+                results.append(result_doc)
+        
+        # Sort by score descending
+        results.sort(key=lambda x: x["_score"], reverse=True)
+        return results
 
     def filter_events(self, query: str, events: List[dict]) -> List[str]:
         """
@@ -94,11 +125,12 @@ class TagSearch:
         
         try:
             response = self.model.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
-    )
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+                )
         )
             text = response.text.strip()
             if text.startswith("```json"):

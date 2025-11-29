@@ -355,6 +355,46 @@ def search_files_by_tags(query_tags, group_id=None, user_id=None):
                 
     return matched_files
 
+def get_candidate_files(group_id=None, user_id=None):
+    """
+    Retrieves all files accessible to the user/group without tag filtering.
+    """
+    files_ref = db.reference('files')
+    snapshot = files_ref.get()
+    
+    candidate_files = []
+    if snapshot:
+        items = []
+        if isinstance(snapshot, list):
+            for i, val in enumerate(snapshot):
+                if val:
+                    val['id'] = str(i)
+                    items.append(val)
+        elif isinstance(snapshot, dict):
+            for key, val in snapshot.items():
+                val['id'] = key
+                items.append(val)
+        
+        for val in items:
+            if not isinstance(val, dict):
+                continue
+                
+            # Access Control Filter
+            if group_id:
+                if val.get('group_id') != group_id:
+                    continue
+            elif user_id:
+                if val.get('owner_id') != user_id:
+                    continue
+            
+            # Backfill URL
+            if 'url' not in val and 'storage_path' in val and val['storage_path'].startswith('http'):
+                val['url'] = val['storage_path']
+            
+            candidate_files.append(val)
+            
+    return candidate_files
+
 def get_tag_pool():
     """Retrieves the global tag pool."""
     ref = db.reference('tags/all')

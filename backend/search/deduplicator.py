@@ -17,7 +17,7 @@ class TagDeduplicator:
             return []
             
         prompt = f"""
-        Analyze the following list of tags and deduplicate them by merging semantically similar tags.
+        Analyze the following list of tags and deduplicate them by merging semantically similar tags ignore the language of the tags.
         Keep the most canonical/common form.
         Return ONLY a JSON array of strings of the unique tags.
         
@@ -25,11 +25,11 @@ class TagDeduplicator:
         {json.dumps(tags)}
         """
         response = self.model.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
-    )
+                thinking_config=types.ThinkingConfig(thinking_budget=0) # Disables thinking
+            )
         )
         try:
             text = response.text.strip()

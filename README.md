@@ -48,8 +48,10 @@ LINE_CHANNEL_SECRET=your_secret
 ```
 - Run the server:
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --reload --port 8001
 ```
+
+For detailed backend documentation, see [backend/README.md](backend/README.md).
 
 ### 2. Frontend Setup
 ```bash

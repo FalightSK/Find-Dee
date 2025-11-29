@@ -8,7 +8,8 @@ import re
 from firebase_config import (
     save_file_metadata, save_user, upload_file_to_storage, 
     search_files_by_tags, get_tag_pool, save_tag_pool, check_filename_exists,
-    search_dates, get_upcoming_dates, get_dates_this_month, get_all_dates
+    search_dates, get_upcoming_dates, get_dates_this_month, get_all_dates,
+    get_candidate_files
 )
 from search.tagger import TagGenerator
 from search.deduplicator import TagDeduplicator
@@ -86,7 +87,11 @@ def handle_line_event(event, line_bot_api):
                 elif event.source.type == 'room':
                     group_id = event.source.room_id
                 
-                found_files = search_files_by_tags(query_tags, group_id=group_id, user_id=user_id)
+                # Get candidate files (all files accessible in this context)
+                candidate_files = get_candidate_files(group_id=group_id, user_id=user_id)
+                
+                # Perform search using the searcher
+                found_files = searcher.search_documents(query, candidate_files, tag_pool, group_id=group_id, owner_id=user_id)
                 
                 if not found_files:
                     reply_text = f"ไม่พบเอกสารที่เกี่ยวกับ: {', '.join(query_tags)} ครับ 😅"
@@ -184,7 +189,6 @@ def handle_line_event(event, line_bot_api):
             elif query.lower() in ["month", "this month", "เดือนนี้", "เดือน"]:
                 found_dates = get_dates_this_month()
                 search_title = "กิจกรรมในเดือนนี้"
-            else:
             else:
                 # Semantic Search using LLM
                 all_dates = get_all_dates()
