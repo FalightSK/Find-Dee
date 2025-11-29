@@ -22,7 +22,13 @@ from firebase_config import (
     get_user_profile, 
     get_files_by_group, 
     get_files_by_user,
-    get_all_users_map
+    get_files_by_user,
+    get_all_users_map,
+    save_collection,
+    get_collections_by_user,
+    update_collection,
+    delete_collection,
+    get_collection_details
 )
 
 app = FastAPI()
@@ -351,6 +357,78 @@ def handle_message(event):
 @handler.add(PostbackEvent)
 def handle_postback(event):
     handle_line_event(event, line_bot_api)
+
+# --- Collections API ---
+
+class CollectionCreate(BaseModel):
+    name: str
+    owner_id: str
+    description: Optional[str] = ""
+    file_ids: Optional[List[str]] = []
+
+class CollectionUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    file_ids: Optional[List[str]] = None
+
+@app.post("/api/collections")
+async def create_collection(collection: CollectionCreate):
+    try:
+        data = collection.dict()
+        collection_id = save_collection(data)
+        return {"collection_id": collection_id, "message": "Collection created successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/collections/{user_id}")
+async def get_user_collections(user_id: str):
+    try:
+        collections = get_collections_by_user(user_id)
+        return {"collections": collections}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/collections/detail/{collection_id}")
+async def get_collection(collection_id: str):
+    try:
+        collection = get_collection_details(collection_id)
+        if not collection:
+            raise HTTPException(status_code=404, detail="Collection not found")
+        return collection
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/collections/{collection_id}")
+async def update_collection_endpoint(collection_id: str, updates: CollectionUpdate):
+    try:
+        update_dict = updates.dict(exclude_unset=True)
+        success = update_collection(collection_id, update_dict)
+        if not success:
+            raise HTTPException(status_code=404, detail="Collection not found")
+        return {"message": "Collection updated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/collections/{collection_id}")
+async def delete_collection_endpoint(collection_id: str):
+    try:
+        success = delete_collection(collection_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Collection not found")
+        return {"message": "Collection deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/collections/{collection_id}/save")
+async def save_collection_endpoint(collection_id: str, user_id: str = Form(...)):
+    try:
+        from firebase_config import save_collection_access
+        success = save_collection_access(collection_id, user_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Collection not found")
+        return {"message": "Collection saved successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

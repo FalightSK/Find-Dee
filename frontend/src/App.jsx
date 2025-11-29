@@ -57,12 +57,22 @@ function AppContent() {
         }
       })
   }, [])
-
   const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Deep Link Handling
+    const params = new URLSearchParams(location.search);
+    const collectionId = params.get('collectionId');
+    if (collectionId && location.pathname !== '/share') {
+      console.log("Deep link detected, redirecting to Share view...");
+      navigate(`/share?collectionId=${collectionId}`);
+    }
+  }, [location, navigate]);
 
   const getPageTitle = () => {
     switch (location.pathname) {
-      case '/share': return 'Share';
+      case '/share': return 'Collection';
       case '/settings': return 'Settings';
       default: return 'Files';
     }
@@ -96,7 +106,7 @@ function AppContent() {
         {/* Bottom Navigation */}
         <nav className="bottom-nav">
           <NavItem to="/" icon={FileText} label="Files" />
-          <NavItem to="/share" icon={Share2} label="Share" />
+          <NavItem to="/share" icon={Share2} label="Collection" />
           <NavItem to="/settings" icon={Settings} label="Settings" />
         </nav>
       </div>

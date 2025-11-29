@@ -558,3 +558,116 @@ def get_all_dates():
             items.append(val)
             
     return items
+
+def save_collection(collection_data):
+    """
+    Saves a new collection.
+    collection_data: name, owner_id, description, file_ids (list)
+    """
+    ref = db.reference('collections')
+    new_ref = ref.push()
+    collection_id = new_ref.key
+    
+    collection_data['created_at'] = str(datetime.datetime.utcnow())
+    collection_data['updated_at'] = str(datetime.datetime.utcnow())
+    if 'file_ids' not in collection_data:
+        collection_data['file_ids'] = []
+        
+    new_ref.set(collection_data)
+    return collection_id
+
+def get_collections_by_user(user_id):
+    """Retrieves all collections owned by a user."""
+    ref = db.reference('collections')
+    # Fallback to client-side filtering to avoid "Index not defined" errors
+    snapshot = ref.get()
+    
+    collections = []
+    if snapshot:
+        items = []
+        if isinstance(snapshot, list):
+            for i, val in enumerate(snapshot):
+                if val:
+                    val['id'] = str(i)
+                    items.append(val)
+        elif isinstance(snapshot, dict):
+            for key, val in snapshot.items():
+                val['id'] = key
+                items.append(val)
+        
+        # Filter by owner_id or shared_with
+        for item in items:
+            is_owner = item.get('owner_id') == user_id
+            is_shared = user_id in item.get('shared_with', [])
+            
+            if is_owner or is_shared:
+                collections.append(item)
+                
+        # Sort by updated_at desc
+        collections.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
+        
+    return collections
+
+def update_collection(collection_id, updates):
+    """Updates a collection."""
+    ref = db.reference(f'collections/{collection_id}')
+    if ref.get():
+        updates['updated_at'] = str(datetime.datetime.utcnow())
+        ref.update(updates)
+        return True
+    return False
+
+def delete_collection(collection_id):
+    """Deletes a collection."""
+    ref = db.reference(f'collections/{collection_id}')
+    if ref.get():
+        ref.delete()
+        return True
+    return False
+
+def get_collection_details(collection_id):
+    """Retrieves a single collection with its file details."""
+    # 1. Get Collection
+    col_ref = db.reference(f'collections/{collection_id}')
+    collection = col_ref.get()
+    
+    if not collection:
+        return None
+        
+    collection['id'] = collection_id
+    
+    # 2. Get Files
+    file_ids = collection.get('file_ids', [])
+    files = []
+    
+    if file_ids:
+        # In a real app, we might want to batch get or optimize this
+        # For prototype, fetching one by one is acceptable or fetching all user files and filtering
+        # Let's fetch individual files for accuracy
+        for f_id in file_ids:
+            f_ref = db.reference(f'files/{f_id}')
+            f_data = f_ref.get()
+            if f_data:
+                f_data['id'] = f_id
+                # Backfill URL
+                if 'url' not in f_data and 'storage_path' in f_data and f_data['storage_path'].startswith('http'):
+                    f_data['url'] = f_data['storage_path']
+                files.append(f_data)
+                
+    collection['files'] = files
+    return collection
+
+def save_collection_access(collection_id, user_id):
+    """Adds a user to the shared_with list of a collection."""
+    ref = db.reference(f'collections/{collection_id}')
+    collection = ref.get()
+    
+    if not collection:
+        return False
+        
+    shared_with = collection.get('shared_with', [])
+    if user_id not in shared_with:
+        shared_with.append(user_id)
+        ref.update({'shared_with': shared_with})
+        
+    return True

@@ -1,5 +1,5 @@
-import { useState, useEffect, useContext } from 'react';
-import { Search, MoreVertical, FileText, Image as ImageIcon, Plus, X, Upload, ArrowUpRight, Trash2, Edit2, ExternalLink, Folder, ArrowLeft, Filter } from 'lucide-react';
+import { useState, useEffect, useContext, useRef } from 'react';
+import { Search, MoreVertical, FileText, Image as ImageIcon, Plus, X, Upload, ArrowUpRight, Trash2, Edit2, ExternalLink, Folder, ArrowLeft, Filter, CheckCircle, Circle, Layers } from 'lucide-react';
 import { UserContext } from '../App';
 
 const FileListView = () => {
@@ -27,6 +27,15 @@ const FileListView = () => {
 
     // Dropdown State
     const [activeDropdown, setActiveDropdown] = useState(null);
+
+    // Selection Mode State
+    const [selectionMode, setSelectionMode] = useState(false);
+    const [selectedFiles, setSelectedFiles] = useState(new Set());
+    const longPressTimer = useRef(null);
+
+    // Collection Modal State
+    const [showCollectionModal, setShowCollectionModal] = useState(false);
+    const [userCollections, setUserCollections] = useState([]);
 
     useEffect(() => {
         if (userId) {
@@ -109,6 +118,19 @@ const FileListView = () => {
         }
     };
 
+    const fetchCollections = async () => {
+        try {
+            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+            const response = await fetch(`${apiUrl}/api/collections/${userId}`, {
+                headers: { 'ngrok-skip-browser-warning': 'true' }
+            });
+            const data = await response.json();
+            setUserCollections(data.collections || []);
+        } catch (error) {
+            console.error("Failed to fetch collections:", error);
+        }
+    };
+
     const handleUpload = async (file) => {
         if (!file) return;
         setUploading(true);
@@ -154,12 +176,7 @@ const FileListView = () => {
 
             if (!response.ok) throw new Error('Delete failed');
             await fetchFiles();
-            // If in folder view, we might need to update currentFolder files locally or re-fetch
-            // Re-fetching updates groupedFiles, but currentFolder is a separate state copy?
-            // Better to re-derive currentFolder from groupedFiles in render or update it.
-            // For simplicity, we'll just re-fetch and if the folder still exists, it updates.
-            // Actually, fetchFiles updates groupedFiles. currentFolder is a reference to one of them? 
-            // If it's a copy, it won't update. Let's handle this by finding the folder again.
+
             const updatedGroups = await (await fetch(`${apiUrl}/api/files/${userId}`)).json();
             setGroupedFiles(updatedGroups.groups || []);
             if (currentFolder) {
@@ -214,6 +231,90 @@ const FileListView = () => {
         }
     };
 
+    // --- Selection Mode Logic ---
+
+    const handleTouchStart = (file) => {
+        if (selectionMode) return;
+        longPressTimer.current = setTimeout(() => {
+            setSelectionMode(true);
+            toggleSelection(file.id);
+            // Vibrate if supported
+            if (navigator.vibrate) navigator.vibrate(50);
+        }, 500); // 500ms long press
+    };
+
+    const handleTouchEnd = () => {
+        if (longPressTimer.current) {
+            clearTimeout(longPressTimer.current);
+            longPressTimer.current = null;
+        }
+    };
+
+    const toggleSelection = (fileId) => {
+        const newSelected = new Set(selectedFiles);
+        if (newSelected.has(fileId)) {
+            newSelected.delete(fileId);
+        } else {
+            newSelected.add(fileId);
+        }
+        setSelectedFiles(newSelected);
+
+        if (newSelected.size === 0 && selectionMode) {
+            setSelectionMode(false);
+        }
+    };
+
+    const handleCardClick = (file) => {
+        if (selectionMode) {
+            toggleSelection(file.id);
+        } else {
+            setSelectedFile(file);
+        }
+    };
+
+    const openCollectionModal = () => {
+        fetchCollections();
+        setShowCollectionModal(true);
+    };
+
+    const addSelectedToCollection = async (collection) => {
+        try {
+            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+            // 1. Get current collection details to get existing file IDs
+            const detailResponse = await fetch(`${apiUrl}/api/collections/detail/${collection.id}`, {
+                headers: { 'ngrok-skip-browser-warning': 'true' }
+            });
+            const detailData = await detailResponse.json();
+            const existingIds = detailData.files.map(f => f.id);
+
+            // 2. Merge with selected files
+            const newIds = Array.from(selectedFiles);
+            const mergedIds = Array.from(new Set([...existingIds, ...newIds]));
+
+            // 3. Update collection
+            await fetch(`${apiUrl}/api/collections/${collection.id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': 'true'
+                },
+                body: JSON.stringify({
+                    file_ids: mergedIds
+                })
+            });
+
+            alert(`Added ${newIds.length} files to ${collection.name}`);
+            setSelectionMode(false);
+            setSelectedFiles(new Set());
+            setShowCollectionModal(false);
+        } catch (error) {
+            alert('Failed to add to collection: ' + error.message);
+        }
+    };
+
+    // --- Render Helpers ---
+
     const getFileIcon = (type) => {
         if (type === 'pdf') return <FileText size={24} className="text-danger" />;
         if (type === 'image' || type === 'png' || type === 'jpg') return <ImageIcon size={24} className="text-success" />;
@@ -230,8 +331,6 @@ const FileListView = () => {
         if (ownerId === userId) return "You";
         return knownUsers[ownerId] || `User ${ownerId.substring(0, 4)}...`;
     };
-
-    // --- Render Helpers ---
 
     // Filter files based on search and uploader
     const getFilteredFiles = (files) => {
@@ -476,94 +575,138 @@ const FileListView = () => {
         );
     };
 
-    const renderFileCard = (file) => (
-        <div
-            key={file.id}
-            className="card border-0 shadow-sm"
-            style={{ borderRadius: '16px', cursor: 'pointer' }}
-            onClick={() => setSelectedFile(file)}
-        >
-            <div className="card-body p-3">
-                <div className="d-flex align-items-start">
-                    {/* File Icon */}
-                    <div className={`file-icon ${getIconBgColor(file.file_type)} me-3 flex-shrink-0`} style={{ width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px' }}>
-                        {getFileIcon(file.file_type)}
-                    </div>
+    const renderFileCard = (file) => {
+        const isSelected = selectedFiles.has(file.id);
 
-                    {/* File Info */}
-                    <div className="flex-grow-1" style={{ minWidth: 0 }}>
-                        <div className="d-flex justify-content-between align-items-start">
-                            <h6 className="card-title mb-1 fw-bold text-truncate pe-2" style={{ fontSize: '15px' }}>{file.filename}</h6>
+        return (
+            <div
+                key={file.id}
+                className={`card border-0 shadow-sm ${isSelected ? 'bg-success bg-opacity-10' : ''}`}
+                style={{ borderRadius: '16px', cursor: 'pointer', transition: 'background-color 0.2s' }}
+                onClick={() => handleCardClick(file)}
+                onTouchStart={() => handleTouchStart(file)}
+                onTouchEnd={handleTouchEnd}
+                onMouseDown={() => handleTouchStart(file)} // For desktop testing
+                onMouseUp={handleTouchEnd}
+                onMouseLeave={handleTouchEnd}
+            >
+                <div className="card-body p-3">
+                    <div className="d-flex align-items-start">
+                        {/* Selection Indicator */}
+                        {selectionMode && (
+                            <div className="me-3 d-flex align-items-center" style={{ height: '48px' }}>
+                                {isSelected ? (
+                                    <CheckCircle className="text-success" size={24} fill="currentColor" color="white" />
+                                ) : (
+                                    <Circle className="text-muted" size={24} />
+                                )}
+                            </div>
+                        )}
 
-                            {/* Actions Dropdown */}
-                            <div className="position-relative ms-2">
-                                <button
-                                    className="btn btn-link text-muted p-0"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        setActiveDropdown(activeDropdown === file.id ? null : file.id);
-                                    }}
-                                >
-                                    <MoreVertical size={20} />
-                                </button>
+                        {/* File Icon */}
+                        <div className={`file-icon ${getIconBgColor(file.file_type)} me-3 flex-shrink-0`} style={{ width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px' }}>
+                            {getFileIcon(file.file_type)}
+                        </div>
 
-                                {activeDropdown === file.id && (
-                                    <div className="position-absolute end-0 mt-2 bg-white shadow-sm rounded-3 py-2" style={{ zIndex: 100, minWidth: '150px', border: '1px solid #eee' }}>
-                                        <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2" onClick={(e) => { e.stopPropagation(); openEditModal(file); }}>
-                                            <Edit2 size={16} /> Edit
+                        {/* File Info */}
+                        <div className="flex-grow-1" style={{ minWidth: 0 }}>
+                            <div className="d-flex justify-content-between align-items-start">
+                                <h6 className="card-title mb-1 fw-bold text-truncate pe-2" style={{ fontSize: '15px' }}>{file.filename}</h6>
+
+                                {/* Actions Dropdown (Hide in selection mode) */}
+                                {!selectionMode && (
+                                    <div className="position-relative ms-2">
+                                        <button
+                                            className="btn btn-link text-muted p-0"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setActiveDropdown(activeDropdown === file.id ? null : file.id);
+                                            }}
+                                        >
+                                            <MoreVertical size={20} />
                                         </button>
-                                        <a href={file.url} target="_blank" rel="noopener noreferrer" className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-decoration-none text-dark" onClick={(e) => e.stopPropagation()}>
-                                            <ExternalLink size={16} /> Preview
-                                        </a>
-                                        <div className="dropdown-divider my-1 border-top"></div>
-                                        <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-danger" onClick={(e) => { e.stopPropagation(); handleDelete(file.id); }}>
-                                            <Trash2 size={16} /> Delete
-                                        </button>
+
+                                        {activeDropdown === file.id && (
+                                            <div className="position-absolute end-0 mt-2 bg-white shadow-sm rounded-3 py-2" style={{ zIndex: 100, minWidth: '150px', border: '1px solid #eee' }}>
+                                                <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2" onClick={(e) => { e.stopPropagation(); openEditModal(file); }}>
+                                                    <Edit2 size={16} /> Edit
+                                                </button>
+                                                <a href={file.url} target="_blank" rel="noopener noreferrer" className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-decoration-none text-dark" onClick={(e) => e.stopPropagation()}>
+                                                    <ExternalLink size={16} /> Preview
+                                                </a>
+                                                <div className="dropdown-divider my-1 border-top"></div>
+                                                <button className="dropdown-item px-3 py-2 d-flex align-items-center gap-2 text-danger" onClick={(e) => { e.stopPropagation(); handleDelete(file.id); }}>
+                                                    <Trash2 size={16} /> Delete
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>
-                        </div>
 
-                        {/* Uploader Name */}
-                        <div className="text-muted small mb-1" style={{ fontSize: '11px' }}>
-                            Uploaded by: <span className="fw-medium text-dark">{getUploaderName(file.owner_id)}</span>
-                        </div>
+                            {/* Uploader Name */}
+                            <div className="text-muted small mb-1" style={{ fontSize: '11px' }}>
+                                Uploaded by: <span className="fw-medium text-dark">{getUploaderName(file.owner_id)}</span>
+                            </div>
 
-                        {/* Tags & Date */}
-                        <div className="d-flex align-items-center flex-wrap gap-1 mt-1">
-                            {file.tags && file.tags.slice(0, 3).map((tag, i) => (
-                                <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {tag}
-                                </span>
-                            ))}
-                            {file.tags && file.tags.length > 3 && (
-                                <span className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px' }}>
-                                    +{file.tags.length - 3}
-                                </span>
-                            )}
-                            <small className="text-muted ms-auto" style={{ fontSize: '10px' }}>{new Date(file.upload_date).toLocaleDateString()}</small>
+                            {/* Tags & Date */}
+                            <div className="d-flex align-items-center flex-wrap gap-1 mt-1">
+                                {file.tags && file.tags.slice(0, 3).map((tag, i) => (
+                                    <span key={i} className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {tag}
+                                    </span>
+                                ))}
+                                {file.tags && file.tags.length > 3 && (
+                                    <span className="badge bg-secondary bg-opacity-10 text-secondary fw-normal" style={{ fontSize: '10px' }}>
+                                        +{file.tags.length - 3}
+                                    </span>
+                                )}
+                                <small className="text-muted ms-auto" style={{ fontSize: '10px' }}>{new Date(file.upload_date).toLocaleDateString()}</small>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
-    );
+        );
+    };
 
     return (
-        <div className="mt-3">
+        <div className="mt-3 pb-5">
             {loading ? (
                 <div className="text-center py-5 text-muted">Loading files...</div>
             ) : (
                 currentFolder ? renderFolderView() : renderHomeView()
             )}
 
-            {/* Floating Action Button */}
-            <button
-                onClick={() => setShowUploadModal(true)}
-                className="fab border-0"
-            >
-                <Plus size={24} />
-            </button>
+            {/* Floating Action Button (Hide in selection mode) */}
+            {!selectionMode && (
+                <button
+                    onClick={() => setShowUploadModal(true)}
+                    className="fab border-0"
+                >
+                    <Plus size={24} />
+                </button>
+            )}
+
+            {/* Selection Mode Bottom Bar */}
+            {selectionMode && (
+                <div className="fixed-bottom bg-white shadow-lg p-3 d-flex align-items-center justify-content-between" style={{ zIndex: 1030, borderTopLeftRadius: '16px', borderTopRightRadius: '16px', bottom: '80px' }}>
+                    <div className="d-flex align-items-center gap-2">
+                        <button className="btn btn-light rounded-circle p-2" onClick={() => { setSelectionMode(false); setSelectedFiles(new Set()); }}>
+                            <X size={20} />
+                        </button>
+                        <span className="fw-bold">{selectedFiles.size} selected</span>
+                    </div>
+                    <button
+                        className="btn btn-primary rounded-pill px-4 fw-bold d-flex align-items-center gap-2"
+                        disabled={selectedFiles.size === 0}
+                        onClick={openCollectionModal}
+                    >
+                        <Layers size={18} />
+                        Add to Collection
+                    </button>
+                </div>
+            )}
 
             {/* Upload Modal */}
             {showUploadModal && (
@@ -632,6 +775,49 @@ const FileListView = () => {
                                     <button className="btn bg-line-green text-white w-100 py-2 rounded-3 fw-bold" onClick={handleUpdate}>
                                         Save Changes
                                     </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="modal-backdrop show"></div>
+                </>
+            )}
+
+            {/* Select Collection Modal */}
+            {showCollectionModal && (
+                <>
+                    <div className="modal show d-block" tabIndex="-1">
+                        <div className="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+                            <div className="modal-content" style={{ borderRadius: '16px' }}>
+                                <div className="modal-header border-0">
+                                    <h5 className="modal-title fw-bold">Add to Collection</h5>
+                                    <button type="button" className="btn-close" onClick={() => setShowCollectionModal(false)}></button>
+                                </div>
+                                <div className="modal-body">
+                                    <p className="text-muted small mb-3">Select a collection to add {selectedFiles.size} files to:</p>
+                                    <div className="d-flex flex-column gap-2">
+                                        {userCollections.length === 0 ? (
+                                            <div className="text-center py-4 text-muted">
+                                                No collections found. <br />
+                                                Create one in the Share tab first!
+                                            </div>
+                                        ) : (
+                                            userCollections.map(col => (
+                                                <button
+                                                    key={col.id}
+                                                    className="btn btn-light text-start p-3 rounded-3 d-flex align-items-center"
+                                                    onClick={() => addSelectedToCollection(col)}
+                                                >
+                                                    <Folder size={20} className="me-3 text-primary" />
+                                                    <div className="flex-grow-1">
+                                                        <div className="fw-bold">{col.name}</div>
+                                                        <small className="text-muted">{col.file_ids ? col.file_ids.length : 0} files</small>
+                                                    </div>
+                                                    <Plus size={20} className="text-muted" />
+                                                </button>
+                                            ))
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </div>
