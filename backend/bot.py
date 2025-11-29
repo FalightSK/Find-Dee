@@ -9,7 +9,8 @@ import json
 import requests
 from firebase_config import (
     save_file_metadata, save_user, upload_file_to_storage, 
-    get_tag_pool, save_tag_pool, check_filename_exists
+    get_tag_pool, save_tag_pool, check_filename_exists,
+    get_candidate_files, update_file_metadata
 )
 from search.tagger import TagGenerator
 from search.deduplicator import TagDeduplicator
@@ -312,13 +313,52 @@ def process_upload(event, line_bot_api, user_id, data):
     # 2. Deduplicate Tags
     tags = generated_metadata.get("tags", [])
     if deduplicator:
-        tags = deduplicator.deduplicate(tags)
-        
-    # Update Tag Pool
-    tag_pool = get_tag_pool() or []
-    if tags:
-        tag_pool = list(set(tag_pool + tags))
-        save_tag_pool(tag_pool)
+        try:
+            # Get current pool
+            tag_pool = get_tag_pool() or []
+            
+            # Combine new tags with existing pool for holistic deduplication
+            all_tags_to_process = list(set(tags + tag_pool))
+            
+            # Run Deduplication
+            tag_mapping = deduplicator.deduplicate_and_map(all_tags_to_process)
+            
+            # Update Tag Pool
+            new_pool = sorted(list(set(tag_mapping.values())))
+            save_tag_pool(new_pool)
+            
+            # Update tags for the CURRENT file
+            final_current_tags = []
+            for t in tags:
+                final_current_tags.append(tag_mapping.get(t, t))
+            tags = sorted(list(set(final_current_tags)))
+            
+            # Update tags for ALL EXISTING files
+            # This ensures consistency across the entire database
+            all_files = get_candidate_files()
+            for f in all_files:
+                f_id = f.get('id')
+                f_tags = f.get('tags', [])
+                if not f_tags:
+                    continue
+                    
+                new_f_tags = []
+                changed = False
+                for t in f_tags:
+                    new_t = tag_mapping.get(t, t)
+                    new_f_tags.append(new_t)
+                    if new_t != t:
+                        changed = True
+                
+                if changed:
+                    new_f_tags = sorted(list(set(new_f_tags)))
+                    update_file_metadata(f_id, {'tags': new_f_tags})
+                    logger.info(f"Updated tags for file {f_id} during upload cleanup.")
+                    
+        except Exception as e:
+            logger.error(f"Error during tag deduplication/remapping: {e}")
+            # Fallback: just use generated tags
+            pass
         
     if not tags:
         tags = ["Uncategorized"]
