@@ -55,6 +55,7 @@ class TagGenerator:
     def generate_tags(self, document_text: str) -> List[str]:
         prompt = f"""
         Generate a list of relevant tags for the following text.
+        The generated tags must be in English.
         Return ONLY a JSON array of strings. Do not include markdown formatting.
         
         Text:

@@ -48,7 +48,7 @@ class TagSearch:
             return ["other"]
 
     def match(self, query_tags: List[str], document_tags: List[str]) -> float:
-        # Simple Jaccard similarity
+        # Match if any tag exists in the document
         if not query_tags or not document_tags:
             return 0.0
         
@@ -56,9 +56,9 @@ class TagSearch:
         d_set = set(t.lower() for t in document_tags)
         
         intersection = q_set.intersection(d_set)
-        union = q_set.union(d_set)
         
-        return len(intersection) / len(union) if union else 0.0
+        # Return number of matches to allow sorting by relevance
+        return float(len(intersection))
 
     def search_documents(self, query: str, documents: List[dict], tag_pool: List[str], group_id: str = None, owner_id: str = None) -> List[dict]:
         """

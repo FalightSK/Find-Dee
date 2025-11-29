@@ -22,7 +22,6 @@ from firebase_config import (
     get_user_profile, 
     get_files_by_group, 
     get_files_by_user,
-    get_files_by_user,
     get_all_users_map,
     save_collection,
     get_collections_by_user,
@@ -129,7 +128,7 @@ async def search_files(request: SearchRequest):
              raise HTTPException(status_code=503, detail="Search service unavailable")
              
         # 1. Fetch Tag Pool
-        tag_pool = get_tag_pool() or []
+        tag_pool = get_tag_pool()
         
         # 2. Extract Tags
         query_tags = searcher.extract_query_tags(request.query, tag_pool)
@@ -139,8 +138,9 @@ async def search_files(request: SearchRequest):
         
         if request.group_id:
             # Scoped Search: Only files in this group
-            candidate_files = get_files_by_group(request.group_id)
-        else:
+            group_files = get_files_by_group(request.group_id)
+            candidate_files.extend(group_files)
+        if request.user_id:
             # Global Search: All files accessible to user (Personal + Groups)
             # 3.1 Personal Files
             personal_files = get_files_by_user(request.user_id)
@@ -167,7 +167,7 @@ async def search_files(request: SearchRequest):
         # 4. Search & Rank
         found_files = searcher.search_documents(
             request.query, 
-            unique_candidates, 
+            unique_candidates,
             tag_pool, 
             group_id=request.group_id, 
             owner_id=request.owner_id # Use the filter provided by frontend
