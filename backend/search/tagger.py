@@ -56,6 +56,9 @@ class TagGenerator:
         prompt = f"""
         Generate a list of relevant tags for the following text.
         The generated tags must be in English.
+        The tags should be concise (1-3 words each) and relevant to the content.
+        The tags of that file will be the content type of that file, if it a edcucational document, include what subject are they.
+        Tags that you generate will represent the overall content of the document.
         Return ONLY a JSON array of strings. Do not include markdown formatting.
         
         Text:
